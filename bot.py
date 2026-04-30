@@ -73,6 +73,8 @@ async def handle_document(client: Client, message: Message) -> None:
     if not filename.endswith(".wav"):
         await message.reply_text(messages.INVALID_EXTENSION_TEXT)
         return
+    original_name = document.file_name or "audio.wav"
+    output_filename = f"{Path(original_name).stem}.mp3"
 
     if document.file_size and document.file_size > max_input_bytes:
         await message.reply_text(messages.file_too_big_text(MAX_INPUT_MB))
@@ -102,7 +104,7 @@ async def handle_document(client: Client, message: Message) -> None:
             user_model.increment_conversions(message.from_user.id)
         await message.reply_document(
             document=str(output_path),
-            file_name="converted.mp3",
+            file_name=output_filename,
             caption=messages.CONVERT_SUCCESS_CAPTION,
         )
 
