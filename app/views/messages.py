@@ -13,6 +13,16 @@ CONVERT_SUCCESS_CAPTION = "Готово: WAV -> MP3"
 FALLBACK_TEXT = "Отправь WAV-файл как документ."
 
 
+def file_too_big_text(max_mb: int) -> str:
+    return (
+        "Файл слишком большой.\n"
+        f"Отправь WAV размером до {max_mb} МБ."
+    )
+
+
+FILE_TOO_BIG_TEXT = file_too_big_text(50)
+
+
 def stats_text(rows: list[tuple], total_users: int, total_conversions: int) -> str:
     lines = [
         f"Пользователей: {total_users}",
