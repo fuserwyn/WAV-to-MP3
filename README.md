@@ -2,6 +2,15 @@
 
 Телеграм-бот, который принимает `.wav` файл и отправляет обратно `.mp3`.
 
+## Структура (MVC)
+
+- `app/models` — бизнес-логика работы с пользователями.
+- `app/repositories` — SQL-слой (PostgreSQL, пользователи, статистика).
+- `app/views` — текстовые сообщения и форматирование ответа статистики.
+- `app/controllers` — Telegram handlers и связка model/view.
+- `app/services` — сервисы бизнес-логики (конвертация WAV -> MP3).
+- `bot.py` — точка входа, инициализация и запуск.
+
 ## 1) Подготовка
 
 Установи `ffmpeg` (нужен для конвертации):
@@ -37,6 +46,7 @@ cp .env.example .env
 
 ```env
 BOT_TOKEN=твой_токен
+DATABASE_URL=postgresql://user:password@localhost:5432/wav_to_mp3
 ```
 
 ## 3) Запуск
@@ -49,6 +59,10 @@ export $(grep -v '^#' .env | xargs) && python3 bot.py
 
 - Отправь боту WAV-файл **как документ**.
 - Бот вернет файл `converted.mp3`.
+- Команда `/stats` показывает:
+  - сколько всего пользователей заходило,
+  - сколько всего конвертаций выполнено,
+  - список последних активных пользователей.
 
 ## Деплой на Railway
 
@@ -57,7 +71,12 @@ export $(grep -v '^#' .env | xargs) && python3 bot.py
 3. Railway автоматически соберет `Dockerfile`.
 4. В `Variables` добавь:
    - `BOT_TOKEN=твой_токен_бота`
+   - `DATABASE_URL=${{Postgres.DATABASE_URL}}`
 5. Нажми `Deploy`.
+
+Как подключить Postgres в Railway:
+- В проекте Railway нажми `New` -> `Database` -> `Add PostgreSQL`.
+- После создания БД добавь переменную `DATABASE_URL` из секции Variables Postgres-сервиса в сервис с ботом.
 
 Проверка:
 - Открой `Deployments` и убедись, что контейнер запущен без ошибок.
