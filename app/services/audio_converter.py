@@ -20,3 +20,19 @@ def convert_wav_to_mp3(input_path: Path, output_path: Path) -> subprocess.Comple
         text=True,
         check=False,
     )
+
+
+def convert_audio(input_path: Path, output_path: Path) -> subprocess.CompletedProcess:
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(input_path),
+        str(output_path),
+    ]
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+    )

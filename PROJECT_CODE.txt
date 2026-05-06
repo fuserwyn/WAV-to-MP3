@@ -1,0 +1,624 @@
+================================================================================
+WAV-to-MP3 project — full source dump
+Generated: project code snapshot
+Note: .env is NOT included (secrets). See .env.example for variable names.
+================================================================================
+
+================================================================================
+FILE: requirements.txt
+================================================================================
+
+pyrogram
+psycopg[binary]
+
+================================================================================
+FILE: Dockerfile
+================================================================================
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python", "bot.py"]
+
+================================================================================
+FILE: .dockerignore
+================================================================================
+
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+.env
+
+================================================================================
+FILE: .gitignore
+================================================================================
+
+.env
+__pycache__/
+*.pyc
+
+================================================================================
+FILE: .env.example
+================================================================================
+
+BOT_TOKEN=your_telegram_bot_token
+API_ID=123456
+API_HASH=your_telegram_api_hash
+DATABASE_URL=postgresql://user:password@localhost:5432/wav_to_mp3
+MAX_INPUT_MB=50
+
+================================================================================
+FILE: README.md
+================================================================================
+
+# WAV to MP3 Telegram Bot
+
+Телеграм-бот, который принимает `.wav` файл и отправляет обратно `.mp3`.
+Работает через MTProto (`Pyrogram`), поэтому можно обрабатывать файлы до 50 МБ.
+`tgcrypto` не обязателен (без него чуть ниже производительность, но проще деплой).
+
+## Структура (MVC)
+
+- `app/models` — бизнес-логика работы с пользователями.
+- `app/repositories` — SQL-слой (PostgreSQL, пользователи, статистика).
+- `app/views` — текстовые сообщения и форматирование ответа статистики.
+- `app/services` — сервисы бизнес-логики (конвертация WAV -> MP3).
+- `bot.py` — точка входа, инициализация и запуск.
+
+## 1) Подготовка
+
+Установи `ffmpeg` (нужен для конвертации):
+
+```bash
+brew install ffmpeg
+```
+
+Создай и активируй виртуальное окружение:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Установи зависимости:
+
+```bash
+pip install -r requirements.txt
+```
+
+## 2) Настройка Telegram API и токена
+
+1. Создай бота через [@BotFather](https://t.me/BotFather)
+2. Скопируй токен
+3. Получи `API_ID` и `API_HASH` на [my.telegram.org](https://my.telegram.org) (`API development tools`)
+3. Создай файл `.env` на основе примера:
+
+```bash
+cp .env.example .env
+```
+
+В `.env`:
+
+```env
+BOT_TOKEN=твой_токен
+API_ID=123456
+API_HASH=твой_api_hash
+DATABASE_URL=postgresql://user:password@localhost:5432/wav_to_mp3
+MAX_INPUT_MB=50
+```
+
+## 3) Запуск
+
+```bash
+export $(grep -v '^#' .env | xargs) && python3 bot.py
+```
+
+## Использование
+
+- Отправь боту WAV-файл **как документ**.
+- Бот вернет файл `converted.mp3`.
+- Лимит входного файла задается переменной `MAX_INPUT_MB` (по умолчанию 50).
+- Команда `/stats` показывает:
+  - сколько всего пользователей заходило,
+  - сколько всего конвертаций выполнено,
+  - список последних активных пользователей.
+
+## Деплой на Railway
+
+1. Запушь репозиторий в GitHub.
+2. В Railway: `New Project` -> `Deploy from GitHub repo` -> выбери репозиторий.
+3. Railway автоматически соберет `Dockerfile`.
+4. В `Variables` добавь:
+   - `BOT_TOKEN=твой_токен_бота`
+   - `API_ID=твой_api_id`
+   - `API_HASH=твой_api_hash`
+   - `DATABASE_URL=${{Postgres.DATABASE_URL}}`
+   - `MAX_INPUT_MB=50`
+5. Нажми `Deploy`.
+
+Как подключить Postgres в Railway:
+- В проекте Railway нажми `New` -> `Database` -> `Add PostgreSQL`.
+- После создания БД добавь переменную `DATABASE_URL` из секции Variables Postgres-сервиса в сервис с ботом.
+
+Проверка:
+- Открой `Deployments` и убедись, что контейнер запущен без ошибок.
+- Напиши боту `/start`, затем отправь `.wav` файлом.
+
+================================================================================
+FILE: bot.py
+================================================================================
+
+import logging
+import tempfile
+from pathlib import Path
+
+from pyrogram import Client, filters
+from pyrogram.types import Message
+
+from app.config import API_HASH, API_ID, BOT_TOKEN, DATABASE_URL, MAX_INPUT_MB
+from app.models.user_model import UserModel
+from app.repositories.user_repository import UserRepository
+from app.services.audio_converter import convert_wav_to_mp3
+from app.views import messages
+
+if not BOT_TOKEN:
+    raise RuntimeError("Environment variable BOT_TOKEN is required")
+if not DATABASE_URL:
+    raise RuntimeError("Environment variable DATABASE_URL is required")
+if not API_ID:
+    raise RuntimeError("Environment variable API_ID is required")
+if not API_HASH:
+    raise RuntimeError("Environment variable API_HASH is required")
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("wav-to-mp3-bot")
+
+user_repository = UserRepository(DATABASE_URL)
+user_model = UserModel(user_repository)
+user_model.init_db()
+
+app = Client(
+    "wav_to_mp3_bot",
+    api_id=int(API_ID),
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    in_memory=True,
+)
+max_input_bytes = MAX_INPUT_MB * 1024 * 1024
+
+
+def track_user(message: Message) -> None:
+    user = message.from_user
+    if user is None:
+        return
+    user_model.upsert_user(user.id, user.username, user.first_name, user.last_name)
+
+
+@app.on_message(filters.command("start"))
+async def cmd_start(_: Client, message: Message) -> None:
+    track_user(message)
+    await message.reply_text(messages.start_text())
+
+
+@app.on_message(filters.command("stats"))
+async def cmd_stats(_: Client, message: Message) -> None:
+    track_user(message)
+    rows, total_users, total_conversions = user_model.fetch_stats()
+    await message.reply_text(messages.stats_text(rows, total_users, total_conversions))
+
+
+@app.on_message(filters.document)
+async def handle_document(client: Client, message: Message) -> None:
+    track_user(message)
+    document = message.document
+    if document is None:
+        await message.reply_text(messages.FALLBACK_TEXT)
+        return
+
+    filename = (document.file_name or "").lower()
+    if not filename.endswith(".wav"):
+        await message.reply_text(messages.INVALID_EXTENSION_TEXT)
+        return
+    original_name = document.file_name or "audio.wav"
+    output_filename = f"{Path(original_name).stem}.mp3"
+
+    if document.file_size and document.file_size > max_input_bytes:
+        await message.reply_text(messages.file_too_big_text(MAX_INPUT_MB))
+        return
+
+    await message.reply_text(messages.CONVERTING_TEXT)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        input_path = Path(tmpdir) / "input.wav"
+        output_path = Path(tmpdir) / "output.mp3"
+
+        await client.download_media(message, file_name=str(input_path))
+
+        try:
+            result = convert_wav_to_mp3(input_path, output_path)
+        except Exception:
+            logger.exception("Failed to run ffmpeg")
+            await message.reply_text(messages.FFMPEG_START_ERROR_TEXT)
+            return
+
+        if result.returncode != 0 or not output_path.exists():
+            logger.error("ffmpeg failed: %s", result.stderr)
+            await message.reply_text(messages.CONVERT_ERROR_TEXT)
+            return
+
+        if message.from_user:
+            user_model.increment_conversions(message.from_user.id)
+        await message.reply_document(
+            document=str(output_path),
+            file_name=output_filename,
+            caption=messages.CONVERT_SUCCESS_CAPTION,
+        )
+
+
+@app.on_message(filters.all)
+async def fallback(_: Client, message: Message) -> None:
+    track_user(message)
+    await message.reply_text(messages.FALLBACK_TEXT)
+
+
+if __name__ == "__main__":
+    app.run()
+
+================================================================================
+FILE: app/__init__.py
+================================================================================
+
+
+================================================================================
+FILE: app/config.py
+================================================================================
+
+import os
+
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
+API_ID = os.getenv("API_ID")
+API_HASH = os.getenv("API_HASH")
+MAX_INPUT_MB = int(os.getenv("MAX_INPUT_MB", "50"))
+
+================================================================================
+FILE: app/models/__init__.py
+================================================================================
+
+
+================================================================================
+FILE: app/models/user_model.py
+================================================================================
+
+from app.repositories.user_repository import UserRepository
+
+
+class UserModel:
+    def __init__(self, user_repository: UserRepository) -> None:
+        self.user_repository = user_repository
+
+    def init_db(self) -> None:
+        self.user_repository.init_db()
+
+    def upsert_user(
+        self,
+        user_id: int,
+        username: str | None,
+        first_name: str | None,
+        last_name: str | None,
+    ) -> None:
+        self.user_repository.upsert_user(user_id, username, first_name, last_name)
+
+    def increment_conversions(self, user_id: int) -> None:
+        self.user_repository.increment_conversions(user_id)
+
+    def fetch_stats(self, limit: int = 20) -> tuple[list[tuple], int, int]:
+        return self.user_repository.fetch_stats(limit)
+
+================================================================================
+FILE: app/repositories/__init__.py
+================================================================================
+
+
+================================================================================
+FILE: app/repositories/user_repository.py
+================================================================================
+
+from psycopg import connect
+
+
+class UserRepository:
+    def __init__(self, database_url: str) -> None:
+        self.database_url = database_url
+
+    def init_db(self) -> None:
+        with connect(self.database_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS users (
+                        user_id BIGINT PRIMARY KEY,
+                        username TEXT,
+                        first_name TEXT,
+                        last_name TEXT,
+                        first_seen_at TIMESTAMPTZ DEFAULT NOW(),
+                        last_seen_at TIMESTAMPTZ DEFAULT NOW(),
+                        conversions_count INTEGER DEFAULT 0
+                    )
+                    """
+                )
+            conn.commit()
+
+    def upsert_user(
+        self,
+        user_id: int,
+        username: str | None,
+        first_name: str | None,
+        last_name: str | None,
+    ) -> None:
+        with connect(self.database_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO users (user_id, username, first_name, last_name)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        username = EXCLUDED.username,
+                        first_name = EXCLUDED.first_name,
+                        last_name = EXCLUDED.last_name,
+                        last_seen_at = NOW()
+                    """,
+                    (user_id, username, first_name, last_name),
+                )
+            conn.commit()
+
+    def increment_conversions(self, user_id: int) -> None:
+        with connect(self.database_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE users
+                    SET conversions_count = conversions_count + 1,
+                        last_seen_at = NOW()
+                    WHERE user_id = %s
+                    """,
+                    (user_id,),
+                )
+            conn.commit()
+
+    def fetch_stats(self, limit: int = 20) -> tuple[list[tuple], int, int]:
+        with connect(self.database_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT user_id, username, first_name, last_name, conversions_count, last_seen_at
+                    FROM users
+                    ORDER BY last_seen_at DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+                rows = cur.fetchall()
+
+                cur.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(conversions_count), 0) FROM users"
+                )
+                totals = cur.fetchone()
+
+        total_users = totals[0] if totals else 0
+        total_conversions = totals[1] if totals else 0
+        return rows, total_users, total_conversions
+
+================================================================================
+FILE: app/controllers/__init__.py
+================================================================================
+
+
+================================================================================
+FILE: app/controllers/bot_controller.py
+================================================================================
+Note: legacy aiogram router (not used by bot.py when running Pyrogram entrypoint).
+================================================================================
+
+import logging
+import tempfile
+from pathlib import Path
+
+from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command, CommandStart
+from aiogram.types import FSInputFile, Message
+
+from app.models.user_model import UserModel
+from app.services.audio_converter import convert_wav_to_mp3
+from app.views import messages
+
+
+logger = logging.getLogger("wav-to-mp3-bot")
+MAX_TELEGRAM_DOWNLOAD_BYTES = 20 * 1024 * 1024
+
+
+def create_router(bot: Bot, user_model: UserModel) -> Router:
+    router = Router()
+
+    def track_user(message: Message) -> None:
+        user = message.from_user
+        if user is None:
+            return
+        user_model.upsert_user(user.id, user.username, user.first_name, user.last_name)
+
+    @router.message(CommandStart())
+    async def cmd_start(message: Message) -> None:
+        track_user(message)
+        await message.answer(messages.start_text())
+
+    @router.message(Command("stats"))
+    async def cmd_stats(message: Message) -> None:
+        track_user(message)
+        rows, total_users, total_conversions = user_model.fetch_stats()
+        await message.answer(messages.stats_text(rows, total_users, total_conversions))
+
+    @router.message(F.document)
+    async def convert_document(message: Message) -> None:
+        track_user(message)
+        document = message.document
+        filename = (document.file_name or "").lower()
+
+        if not filename.endswith(".wav"):
+            await message.answer(messages.INVALID_EXTENSION_TEXT)
+            return
+
+        if document.file_size and document.file_size > MAX_TELEGRAM_DOWNLOAD_BYTES:
+            await message.answer(messages.FILE_TOO_BIG_TEXT)
+            return
+
+        await message.answer(messages.CONVERTING_TEXT)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input.wav"
+            output_path = Path(tmpdir) / "output.mp3"
+
+            try:
+                await bot.download(document, destination=input_path)
+            except TelegramBadRequest as exc:
+                if "file is too big" in str(exc).lower():
+                    await message.answer(messages.FILE_TOO_BIG_TEXT)
+                    return
+                raise
+
+            try:
+                result = convert_wav_to_mp3(input_path, output_path)
+            except Exception:
+                logger.exception("Failed to run ffmpeg")
+                await message.answer(messages.FFMPEG_START_ERROR_TEXT)
+                return
+
+            if result.returncode != 0 or not output_path.exists():
+                logger.error("ffmpeg failed: %s", result.stderr)
+                await message.answer(messages.CONVERT_ERROR_TEXT)
+                return
+
+            if message.from_user:
+                user_model.increment_conversions(message.from_user.id)
+            audio = FSInputFile(path=output_path, filename="converted.mp3")
+            await message.answer_document(audio, caption=messages.CONVERT_SUCCESS_CAPTION)
+
+    @router.message()
+    async def fallback(message: Message) -> None:
+        track_user(message)
+        await message.answer(messages.FALLBACK_TEXT)
+
+    return router
+
+================================================================================
+FILE: app/views/__init__.py
+================================================================================
+
+from . import messages
+
+
+================================================================================
+FILE: app/views/messages.py
+================================================================================
+
+def start_text() -> str:
+    return (
+        "Привет! Отправь мне WAV-файл как документ, и я верну его в MP3.\n"
+        "Для статистики: /stats"
+    )
+
+
+INVALID_EXTENSION_TEXT = "Нужен файл с расширением .wav"
+CONVERTING_TEXT = "Получил файл, конвертирую..."
+FFMPEG_START_ERROR_TEXT = "Не удалось запустить ffmpeg."
+CONVERT_ERROR_TEXT = "Ошибка конвертации. Проверь, что это валидный WAV."
+CONVERT_SUCCESS_CAPTION = "Готово: WAV -> MP3"
+FALLBACK_TEXT = "Отправь WAV-файл как документ."
+
+
+def file_too_big_text(max_mb: int) -> str:
+    return (
+        "Файл слишком большой.\n"
+        f"Отправь WAV размером до {max_mb} МБ."
+    )
+
+
+FILE_TOO_BIG_TEXT = file_too_big_text(50)
+
+
+def stats_text(rows: list[tuple], total_users: int, total_conversions: int) -> str:
+    lines = [
+        f"Пользователей: {total_users}",
+        f"Всего конвертаций: {total_conversions}",
+        "",
+        f"Последние {len(rows)} активных пользователей:",
+    ]
+
+    for user_id, username, first_name, last_name, conversions_count, last_seen_at in rows:
+        display_name = " ".join(
+            part for part in [first_name or "", last_name or ""] if part
+        ).strip()
+        if not display_name:
+            display_name = username or str(user_id)
+        username_part = f"@{username}" if username else "без username"
+        lines.append(
+            f"- {display_name} ({username_part}) | id={user_id} | "
+            f"конвертаций={conversions_count} | last_seen={last_seen_at}"
+        )
+
+    return "\n".join(lines)
+
+================================================================================
+FILE: app/services/__init__.py
+================================================================================
+
+
+================================================================================
+FILE: app/services/audio_converter.py
+================================================================================
+
+import subprocess
+from pathlib import Path
+
+
+def convert_wav_to_mp3(input_path: Path, output_path: Path) -> subprocess.CompletedProcess:
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(input_path),
+        "-codec:a",
+        "libmp3lame",
+        "-q:a",
+        "2",
+        str(output_path),
+    ]
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+================================================================================
+END OF DUMP
+================================================================================

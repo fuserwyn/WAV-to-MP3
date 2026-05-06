@@ -8,7 +8,7 @@ from pyrogram.types import Message
 from app.config import API_HASH, API_ID, BOT_TOKEN, DATABASE_URL, MAX_INPUT_MB
 from app.models.user_model import UserModel
 from app.repositories.user_repository import UserRepository
-from app.services.audio_converter import convert_wav_to_mp3
+from app.services.audio_converter import convert_audio
 from app.views import messages
 
 if not BOT_TOKEN:
@@ -70,11 +70,18 @@ async def handle_document(client: Client, message: Message) -> None:
         return
 
     filename = (document.file_name or "").lower()
-    if not filename.endswith(".wav"):
+    if filename.endswith(".wav"):
+        input_extension = ".wav"
+        output_extension = ".mp3"
+    elif filename.endswith(".mp3"):
+        input_extension = ".mp3"
+        output_extension = ".wav"
+    else:
         await message.reply_text(messages.INVALID_EXTENSION_TEXT)
         return
+
     original_name = document.file_name or "audio.wav"
-    output_filename = f"{Path(original_name).stem}.mp3"
+    output_filename = f"{Path(original_name).stem}{output_extension}"
 
     if document.file_size and document.file_size > max_input_bytes:
         await message.reply_text(messages.file_too_big_text(MAX_INPUT_MB))
@@ -83,13 +90,13 @@ async def handle_document(client: Client, message: Message) -> None:
     await message.reply_text(messages.CONVERTING_TEXT)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        input_path = Path(tmpdir) / "input.wav"
-        output_path = Path(tmpdir) / "output.mp3"
+        input_path = Path(tmpdir) / f"input{input_extension}"
+        output_path = Path(tmpdir) / f"output{output_extension}"
 
         await client.download_media(message, file_name=str(input_path))
 
         try:
-            result = convert_wav_to_mp3(input_path, output_path)
+            result = convert_audio(input_path, output_path)
         except Exception:
             logger.exception("Failed to run ffmpeg")
             await message.reply_text(messages.FFMPEG_START_ERROR_TEXT)

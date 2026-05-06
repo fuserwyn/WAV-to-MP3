@@ -1,16 +1,17 @@
 def start_text() -> str:
     return (
-        "Привет! Отправь мне WAV-файл как документ, и я верну его в MP3.\n"
+        "Привет! Отправь мне WAV или MP3 как документ.\n"
+        "WAV -> MP3, MP3 -> WAV.\n"
         "Для статистики: /stats"
     )
 
 
-INVALID_EXTENSION_TEXT = "Нужен файл с расширением .wav"
+INVALID_EXTENSION_TEXT = "Нужен файл с расширением .wav или .mp3"
 CONVERTING_TEXT = "Получил файл, конвертирую..."
 FFMPEG_START_ERROR_TEXT = "Не удалось запустить ffmpeg."
 CONVERT_ERROR_TEXT = "Ошибка конвертации. Проверь, что это валидный WAV."
-CONVERT_SUCCESS_CAPTION = "Готово: WAV -> MP3"
-FALLBACK_TEXT = "Отправь WAV-файл как документ."
+CONVERT_SUCCESS_CAPTION = "Готово: конвертация завершена"
+FALLBACK_TEXT = "Отправь WAV или MP3 файл как документ."
 
 
 def file_too_big_text(max_mb: int) -> str:
