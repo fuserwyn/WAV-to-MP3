@@ -608,7 +608,6 @@ async def handle_media(client: Client, message: Message) -> None:
     & ~filters.photo
     & ~filters.document
     & ~filters.audio
-    & ~filters.callback_query
 )
 async def fallback_other(_: Client, message: Message) -> None:
     track_user(message)
