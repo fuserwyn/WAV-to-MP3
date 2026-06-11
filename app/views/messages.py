@@ -1,6 +1,8 @@
 def start_text() -> str:
     return (
-        "Привет! Отправь мне WAV или MP3 как документ.\n"
+        "Привет!\n"
+        "• WAV или MP3 — конвертация (аудио или файлом)\n"
+        "• Картинка — ресайз до 3000×3000 px\n"
         "WAV -> MP3, MP3 -> WAV (24-bit).\n"
         "Для статистики: /stats"
     )
@@ -8,19 +10,22 @@ def start_text() -> str:
 
 INVALID_EXTENSION_TEXT = "Нужен файл с расширением .wav или .mp3"
 CONVERTING_TEXT = "Получил файл, конвертирую..."
+RESIZING_TEXT = "Получил картинку, делаю 3000×3000..."
+IMAGE_ERROR_TEXT = "Не удалось обработать картинку."
+IMAGE_SUCCESS_CAPTION = "Готово: 3000×3000 px"
 FFMPEG_START_ERROR_TEXT = "Не удалось запустить ffmpeg."
-CONVERT_ERROR_TEXT = "Ошибка конвертации. Проверь, что это валидный WAV."
+CONVERT_ERROR_TEXT = "Ошибка конвертации. Проверь, что файл валидный."
 def convert_success_caption(output_extension: str) -> str:
     if output_extension == ".wav":
         return "Готово: MP3 -> WAV (24-bit)"
     return "Готово: WAV -> MP3"
-FALLBACK_TEXT = "Отправь WAV или MP3 файл как документ."
+FALLBACK_TEXT = "Отправь WAV/MP3 (аудио или файлом) или картинку."
 
 
 def file_too_big_text(max_mb: int) -> str:
     return (
         "Файл слишком большой.\n"
-        f"Отправь WAV размером до {max_mb} МБ."
+        f"Отправь файл размером до {max_mb} МБ."
     )
 
 
