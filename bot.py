@@ -5,11 +5,20 @@ from pathlib import Path
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
-from app.config import API_HASH, API_ID, BOT_TOKEN, DATABASE_URL, MAX_INPUT_MB
+from app.config import (
+    API_HASH,
+    API_ID,
+    BOT_TOKEN,
+    DATABASE_URL,
+    MAX_INPUT_MB,
+    OPENROUTER_MODEL,
+    OPEN_ROUTER_KEY,
+)
 from app.models.user_model import UserModel
 from app.repositories.user_repository import UserRepository
 from app.services.audio_converter import convert_audio
 from app.services.image_processor import resize_to_square
+from app.services.press_release import generate_press_release
 from app.views import messages
 
 if not BOT_TOKEN:
@@ -44,6 +53,9 @@ max_input_bytes = MAX_INPUT_MB * 1024 * 1024
 MP3_MIME_TYPES = {"audio/mpeg", "audio/mp3"}
 WAV_MIME_TYPES = {"audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave"}
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
+
+
+TELEGRAM_MESSAGE_LIMIT = 4096
 
 
 def track_user(message: Message) -> None:
@@ -95,6 +107,18 @@ def get_media_file_size(message: Message) -> int | None:
     return None
 
 
+async def reply_long_text(message: Message, text: str) -> None:
+    chunk_size = TELEGRAM_MESSAGE_LIMIT - 100
+    for index in range(0, len(text), chunk_size):
+        await message.reply_text(text[index : index + chunk_size])
+
+
+def get_output_image_filename(message: Message) -> str:
+    if message.document and message.document.file_name:
+        return f"{Path(message.document.file_name).stem}_3000.jpg"
+    return "image_3000.jpg"
+
+
 async def resize_and_reply(client: Client, message: Message) -> None:
     file_size = get_media_file_size(message)
     if file_size and file_size > max_input_bytes:
@@ -103,9 +127,11 @@ async def resize_and_reply(client: Client, message: Message) -> None:
 
     await message.reply_text(messages.RESIZING_TEXT)
 
+    output_filename = get_output_image_filename(message)
+
     with tempfile.TemporaryDirectory() as tmpdir:
         input_path = Path(tmpdir) / "input.jpg"
-        output_path = Path(tmpdir) / "output.jpg"
+        output_path = Path(tmpdir) / output_filename
 
         await client.download_media(message, file_name=str(input_path))
 
@@ -119,8 +145,9 @@ async def resize_and_reply(client: Client, message: Message) -> None:
         if message.from_user:
             user_model.increment_conversions(message.from_user.id)
 
-        await message.reply_photo(
-            photo=str(output_path),
+        await message.reply_document(
+            document=str(output_path),
+            file_name=output_filename,
             caption=messages.IMAGE_SUCCESS_CAPTION,
         )
 
@@ -203,6 +230,40 @@ async def cmd_stats(_: Client, message: Message) -> None:
     track_user(message)
     rows, total_users, total_conversions = user_model.fetch_stats()
     await message.reply_text(messages.stats_text(rows, total_users, total_conversions))
+
+
+@app.on_message(filters.command("press"))
+async def cmd_press(_: Client, message: Message) -> None:
+    track_user(message)
+
+    prompt = ""
+    if message.text:
+        parts = message.text.split(maxsplit=1)
+        if len(parts) > 1:
+            prompt = parts[1].strip()
+
+    if not prompt:
+        await message.reply_text(messages.PRESS_USAGE_TEXT)
+        return
+
+    if not OPEN_ROUTER_KEY:
+        await message.reply_text(messages.PRESS_NO_KEY_TEXT)
+        return
+
+    await message.reply_text(messages.PRESS_GENERATING_TEXT)
+
+    try:
+        press_release = await generate_press_release(
+            prompt=prompt,
+            api_key=OPEN_ROUTER_KEY,
+            model=OPENROUTER_MODEL,
+        )
+    except Exception:
+        logger.exception("Failed to generate press release")
+        await message.reply_text(messages.PRESS_ERROR_TEXT)
+        return
+
+    await reply_long_text(message, press_release)
 
 
 @app.on_message(filters.photo)

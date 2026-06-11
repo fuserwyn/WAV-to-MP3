@@ -12,12 +12,14 @@ def resize_to_square(input_path: Path, output_path: Path, size: int = TARGET_SIZ
         else:
             img = img.convert("RGB")
 
-        fitted = img.copy()
-        fitted.thumbnail((size, size), Image.Resampling.LANCZOS)
+        scale = min(size / img.width, size / img.height)
+        new_width = max(1, round(img.width * scale))
+        new_height = max(1, round(img.height * scale))
+        fitted = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
         canvas = Image.new("RGB", (size, size), (255, 255, 255))
-        x = (size - fitted.width) // 2
-        y = (size - fitted.height) // 2
+        x = (size - new_width) // 2
+        y = (size - new_height) // 2
         if fitted.mode == "RGBA":
             canvas.paste(fitted, (x, y), fitted)
         else:

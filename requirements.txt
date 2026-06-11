@@ -1,3 +1,4 @@
 pyrogram
 psycopg[binary]
 Pillow
+httpx
