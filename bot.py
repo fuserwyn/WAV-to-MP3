@@ -112,7 +112,7 @@ async def handle_document(client: Client, message: Message) -> None:
         await message.reply_document(
             document=str(output_path),
             file_name=output_filename,
-            caption=messages.CONVERT_SUCCESS_CAPTION,
+            caption=messages.convert_success_caption(output_extension),
         )
 
 
