@@ -12,17 +12,26 @@ POLL_TIMEOUT_SEC = 120
 logger = logging.getLogger("wav-to-mp3-bot")
 
 
-async def submit_nano_banana_task(prompt: str, api_key: str) -> str:
+async def submit_task(
+    prompt: str,
+    api_key: str,
+    model: str,
+    image_urls: list[str] | None = None,
+) -> str:
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+    input_data: dict = {
+        "prompt": prompt,
+        "size": "1:1",
+    }
+    if image_urls:
+        input_data["image_urls"] = image_urls
+
     payload = {
-        "model": "nano-banana",
-        "input": {
-            "prompt": prompt,
-            "size": "1:1",
-        },
+        "model": model,
+        "input": input_data,
     }
 
     async with httpx.AsyncClient(timeout=60.0) as client:
@@ -81,9 +90,29 @@ async def generate_nano_banana_image(
     prompt: str,
     api_key: str,
     output_path: Path,
-) -> None:
-    task_id = await submit_nano_banana_task(prompt, api_key)
+) -> str:
+    task_id = await submit_task(prompt, api_key, model="nano-banana")
     logger.info("Nano Banana task submitted: %s", task_id)
 
     image_url = await wait_for_image_url(task_id, api_key)
     await download_image(image_url, output_path)
+    return image_url
+
+
+async def edit_nano_banana_image(
+    prompt: str,
+    image_urls: list[str],
+    api_key: str,
+    output_path: Path,
+) -> str:
+    task_id = await submit_task(
+        prompt,
+        api_key,
+        model="nano-banana-edit",
+        image_urls=image_urls,
+    )
+    logger.info("Nano Banana edit task submitted: %s", task_id)
+
+    image_url = await wait_for_image_url(task_id, api_key)
+    await download_image(image_url, output_path)
+    return image_url

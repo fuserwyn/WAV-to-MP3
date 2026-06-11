@@ -20,7 +20,7 @@ from app.models.user_model import UserModel
 from app.repositories.user_repository import UserRepository
 from app.services.audio_converter import convert_audio
 from app.services.image_processor import resize_to_square
-from app.services.nano_banana import generate_nano_banana_image
+from app.services.nano_banana import edit_nano_banana_image, generate_nano_banana_image
 from app.services.press_release import generate_press_release
 from app.services.ringtone_cutter import cut_ringtone, parse_ringtone_input
 from app.views import keyboards, messages
@@ -64,12 +64,14 @@ TELEGRAM_MESSAGE_LIMIT = 4096
 
 MODE_COVER = "cover"
 MODE_COVER_GEN = "cover_gen"
+MODE_COVER_GEN_EDIT = "cover_gen_edit"
 MODE_PRESS = "press"
 MODE_CONVERTER = "converter"
 MODE_RINGTONE = "ringtone"
 
 user_modes: dict[int, str] = {}
 ringtone_pending: dict[int, dict] = {}
+cover_gen_pending: dict[int, dict] = {}
 
 
 def track_user(message: Message) -> None:
@@ -100,6 +102,14 @@ def set_mode(message: Message, mode: str | None) -> None:
         user_modes[user_id] = mode
     if mode != MODE_RINGTONE:
         clear_ringtone_pending(user_id)
+    if mode not in {MODE_COVER_GEN, MODE_COVER_GEN_EDIT}:
+        clear_cover_gen_pending(user_id)
+
+
+def clear_cover_gen_pending(user_id: int | None) -> None:
+    if user_id is None:
+        return
+    cover_gen_pending.pop(user_id, None)
 
 
 def clear_ringtone_pending(user_id: int | None) -> None:
@@ -445,7 +455,27 @@ async def run_press(message: Message, prompt: str) -> None:
     await reply_long_text(message, press_release)
 
 
+async def deliver_cover_result(
+    message: Message,
+    output_path: Path,
+    image_url: str,
+    caption: str,
+) -> None:
+    user_id = get_user_id(message)
+    if user_id is not None:
+        cover_gen_pending[user_id] = {"image_url": image_url}
+        user_modes[user_id] = MODE_COVER_GEN_EDIT
+
+    await message.reply_document(
+        document=str(output_path),
+        caption=caption,
+        reply_markup=keyboards.cover_gen_result_keyboard(),
+    )
+
+
 async def run_cover_gen(message: Message, prompt: str) -> None:
+    clear_cover_gen_pending(get_user_id(message))
+
     if not POYO_API_KEY:
         await message.reply_text(
             messages.COVER_GEN_NO_KEY_TEXT,
@@ -459,7 +489,9 @@ async def run_cover_gen(message: Message, prompt: str) -> None:
         raw_path = Path(tmpdir) / "generated_raw.jpg"
         output_path = Path(tmpdir) / "cover_3000.jpg"
         try:
-            await generate_nano_banana_image(prompt, POYO_API_KEY, raw_path)
+            image_url = await generate_nano_banana_image(
+                prompt, POYO_API_KEY, raw_path
+            )
             resize_to_square(raw_path, output_path)
         except Exception:
             logger.exception("Failed to generate cover via Nano Banana")
@@ -469,10 +501,60 @@ async def run_cover_gen(message: Message, prompt: str) -> None:
             )
             return
 
-        await message.reply_document(
-            document=str(output_path),
-            caption=messages.COVER_GEN_SUCCESS_CAPTION,
+        await deliver_cover_result(
+            message,
+            output_path,
+            image_url,
+            messages.COVER_GEN_SUCCESS_CAPTION,
+        )
+
+
+async def run_cover_edit(message: Message, prompt: str) -> None:
+    user_id = get_user_id(message)
+    if user_id is None:
+        return
+
+    pending = cover_gen_pending.get(user_id)
+    if not pending or not pending.get("image_url"):
+        await message.reply_text(
+            messages.COVER_GEN_NO_IMAGE_TEXT,
             reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    if not POYO_API_KEY:
+        await message.reply_text(
+            messages.COVER_GEN_NO_KEY_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    await message.reply_text(messages.COVER_GEN_EDITING_TEXT)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        raw_path = Path(tmpdir) / "edited_raw.jpg"
+        output_path = Path(tmpdir) / "cover_3000.jpg"
+        try:
+            image_url = await edit_nano_banana_image(
+                prompt,
+                [pending["image_url"]],
+                POYO_API_KEY,
+                raw_path,
+            )
+            resize_to_square(raw_path, output_path)
+        except Exception:
+            logger.exception("Failed to edit cover via Nano Banana")
+            await message.reply_text(
+                messages.COVER_GEN_EDIT_ERROR_TEXT,
+                reply_markup=keyboards.main_menu_keyboard(),
+            )
+            return
+
+        await deliver_cover_result(
+            message,
+            output_path,
+            image_url,
+            messages.COVER_GEN_EDIT_SUCCESS_CAPTION,
         )
 
 
@@ -549,6 +631,7 @@ async def handle_text(_: Client, message: Message) -> None:
         return
 
     if text == keyboards.BTN_COVER_GEN:
+        clear_cover_gen_pending(get_user_id(message))
         set_mode(message, MODE_COVER_GEN)
         await message.reply_text(
             messages.COVER_GEN_MODE_TEXT,
@@ -596,12 +679,37 @@ async def handle_text(_: Client, message: Message) -> None:
         await run_cover_gen(message, text)
         return
 
+    if get_mode(message) == MODE_COVER_GEN_EDIT:
+        await run_cover_edit(message, text)
+        return
+
     if get_mode(message) == MODE_RINGTONE:
         await handle_ringtone_text(message, text)
         return
 
     await message.reply_text(
         messages.FALLBACK_TEXT,
+        reply_markup=keyboards.main_menu_keyboard(),
+    )
+
+
+@app.on_callback_query(filters.regex(f"^{keyboards.COVER_GEN_EDIT_CALLBACK}$"))
+async def cover_gen_edit_callback(_: Client, callback_query: CallbackQuery) -> None:
+    if callback_query.from_user is None or callback_query.message is None:
+        return
+
+    user_id = callback_query.from_user.id
+    if user_id not in cover_gen_pending:
+        await callback_query.answer(
+            "Сначала сгенерируй обложку",
+            show_alert=True,
+        )
+        return
+
+    user_modes[user_id] = MODE_COVER_GEN_EDIT
+    await callback_query.answer()
+    await callback_query.message.reply_text(
+        messages.COVER_GEN_EDIT_PROMPT_TEXT,
         reply_markup=keyboards.main_menu_keyboard(),
     )
 
@@ -659,12 +767,10 @@ async def ringtone_format_callback(_: Client, callback_query: CallbackQuery) -> 
 async def handle_photo(client: Client, message: Message) -> None:
     track_user(message)
     mode = get_mode(message)
-    if mode in {MODE_CONVERTER, MODE_COVER_GEN}:
-        wrong_text = (
-            messages.COVER_GEN_WRONG_INPUT_TEXT
-            if mode == MODE_COVER_GEN
-            else messages.WRONG_MODE_COVER_TEXT
-        )
+    if mode in {MODE_CONVERTER, MODE_COVER_GEN, MODE_COVER_GEN_EDIT}:
+        wrong_text = messages.WRONG_MODE_COVER_TEXT
+        if mode in {MODE_COVER_GEN, MODE_COVER_GEN_EDIT}:
+            wrong_text = messages.COVER_GEN_WRONG_INPUT_TEXT
         await message.reply_text(
             wrong_text,
             reply_markup=keyboards.main_menu_keyboard(),
@@ -687,7 +793,7 @@ async def handle_media(client: Client, message: Message) -> None:
     mode = get_mode(message)
 
     if is_image_document(message):
-        if mode in {MODE_CONVERTER, MODE_RINGTONE, MODE_COVER_GEN}:
+        if mode in {MODE_CONVERTER, MODE_RINGTONE, MODE_COVER_GEN, MODE_COVER_GEN_EDIT}:
             wrong_text = messages.COVER_GEN_WRONG_INPUT_TEXT
             if mode == MODE_CONVERTER:
                 wrong_text = messages.WRONG_MODE_COVER_TEXT
@@ -713,12 +819,10 @@ async def handle_media(client: Client, message: Message) -> None:
         await save_ringtone_audio(client, message)
         return
 
-    if mode in {MODE_COVER, MODE_COVER_GEN}:
-        wrong_text = (
-            messages.COVER_GEN_WRONG_INPUT_TEXT
-            if mode == MODE_COVER_GEN
-            else messages.WRONG_MODE_CONVERTER_TEXT
-        )
+    if mode in {MODE_COVER, MODE_COVER_GEN, MODE_COVER_GEN_EDIT}:
+        wrong_text = messages.WRONG_MODE_CONVERTER_TEXT
+        if mode in {MODE_COVER_GEN, MODE_COVER_GEN_EDIT}:
+            wrong_text = messages.COVER_GEN_WRONG_INPUT_TEXT
         await message.reply_text(
             wrong_text,
             reply_markup=keyboards.main_menu_keyboard(),
