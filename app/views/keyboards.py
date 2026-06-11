@@ -19,6 +19,8 @@ MENU_BUTTONS = {
 RINGTONE_DURATION_CALLBACK_PREFIX = "ringtone_duration:"
 RINGTONE_FORMAT_CALLBACK_PREFIX = "ringtone_format:"
 COVER_GEN_EDIT_CALLBACK = "cover_gen_edit"
+PRESS_EDIT_CALLBACK = "press_edit"
+PRESS_FLOW_CALLBACK_PREFIX = "press_flow:"
 
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
@@ -39,6 +41,36 @@ def ringtone_duration_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("30 сек", callback_data=f"{RINGTONE_DURATION_CALLBACK_PREFIX}30"),
                 InlineKeyboardButton("45 сек", callback_data=f"{RINGTONE_DURATION_CALLBACK_PREFIX}45"),
                 InlineKeyboardButton("60 сек", callback_data=f"{RINGTONE_DURATION_CALLBACK_PREFIX}60"),
+            ]
+        ]
+    )
+
+
+def press_mode_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✨ Сгенерировать",
+                    callback_data=f"{PRESS_FLOW_CALLBACK_PREFIX}generate",
+                ),
+                InlineKeyboardButton(
+                    "📄 Мой текст",
+                    callback_data=f"{PRESS_FLOW_CALLBACK_PREFIX}import",
+                ),
+            ]
+        ]
+    )
+
+
+def press_result_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✏️ Доредактировать",
+                    callback_data=PRESS_EDIT_CALLBACK,
+                )
             ]
         ]
     )

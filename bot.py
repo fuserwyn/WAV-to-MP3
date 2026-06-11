@@ -21,7 +21,7 @@ from app.repositories.user_repository import UserRepository
 from app.services.audio_converter import convert_audio
 from app.services.image_processor import resize_to_square
 from app.services.nano_banana import edit_nano_banana_image, generate_nano_banana_image
-from app.services.press_release import generate_press_release
+from app.services.press_release import edit_press_release, generate_press_release
 from app.services.ringtone_cutter import cut_ringtone, parse_ringtone_input
 from app.views import keyboards, messages
 
@@ -66,12 +66,15 @@ MODE_COVER = "cover"
 MODE_COVER_GEN = "cover_gen"
 MODE_COVER_GEN_EDIT = "cover_gen_edit"
 MODE_PRESS = "press"
+MODE_PRESS_IMPORT = "press_import"
+MODE_PRESS_EDIT = "press_edit"
 MODE_CONVERTER = "converter"
 MODE_RINGTONE = "ringtone"
 
 user_modes: dict[int, str] = {}
 ringtone_pending: dict[int, dict] = {}
 cover_gen_pending: dict[int, dict] = {}
+press_pending: dict[int, dict] = {}
 
 
 def track_user(message: Message) -> None:
@@ -104,6 +107,14 @@ def set_mode(message: Message, mode: str | None) -> None:
         clear_ringtone_pending(user_id)
     if mode not in {MODE_COVER_GEN, MODE_COVER_GEN_EDIT}:
         clear_cover_gen_pending(user_id)
+    if mode not in {MODE_PRESS, MODE_PRESS_IMPORT, MODE_PRESS_EDIT}:
+        clear_press_pending(user_id)
+
+
+def clear_press_pending(user_id: int | None) -> None:
+    if user_id is None:
+        return
+    press_pending.pop(user_id, None)
 
 
 def clear_cover_gen_pending(user_id: int | None) -> None:
@@ -175,10 +186,21 @@ def get_media_file_size(message: Message) -> int | None:
     return None
 
 
-async def reply_long_text(message: Message, text: str) -> None:
+async def reply_long_text(
+    message: Message,
+    text: str,
+    reply_markup=None,
+) -> None:
     chunk_size = TELEGRAM_MESSAGE_LIMIT - 100
-    for index in range(0, len(text), chunk_size):
-        await message.reply_text(text[index : index + chunk_size])
+    chunks = [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
+    if not chunks:
+        chunks = [""]
+    for index, chunk in enumerate(chunks):
+        is_last = index == len(chunks) - 1
+        await message.reply_text(
+            chunk,
+            reply_markup=reply_markup if is_last else None,
+        )
 
 
 def get_output_image_filename(message: Message) -> str:
@@ -428,7 +450,22 @@ async def handle_ringtone_text(message: Message, text: str) -> None:
     await ask_ringtone_format(message, pending, start_sec, duration_sec)
 
 
+async def deliver_press_result(message: Message, text: str) -> None:
+    user_id = get_user_id(message)
+    if user_id is not None:
+        press_pending[user_id] = {"text": text}
+        user_modes[user_id] = MODE_PRESS_EDIT
+
+    await reply_long_text(
+        message,
+        text,
+        reply_markup=keyboards.press_result_keyboard(),
+    )
+
+
 async def run_press(message: Message, prompt: str) -> None:
+    clear_press_pending(get_user_id(message))
+
     if not OPEN_ROUTER_KEY:
         await message.reply_text(
             messages.PRESS_NO_KEY_TEXT,
@@ -452,7 +489,63 @@ async def run_press(message: Message, prompt: str) -> None:
         )
         return
 
-    await reply_long_text(message, press_release)
+    await deliver_press_result(message, press_release)
+
+
+async def run_press_edit(message: Message, instructions: str) -> None:
+    user_id = get_user_id(message)
+    if user_id is None:
+        return
+
+    pending = press_pending.get(user_id)
+    if not pending or not pending.get("text"):
+        await message.reply_text(
+            messages.PRESS_NO_TEXT_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    if not OPEN_ROUTER_KEY:
+        await message.reply_text(
+            messages.PRESS_NO_KEY_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    await message.reply_text(messages.PRESS_EDITING_TEXT)
+
+    try:
+        press_release = await edit_press_release(
+            current_text=pending["text"],
+            edit_instructions=instructions,
+            api_key=OPEN_ROUTER_KEY,
+            model=OPENROUTER_MODEL,
+        )
+    except Exception:
+        logger.exception("Failed to edit press release")
+        await message.reply_text(
+            messages.PRESS_EDIT_ERROR_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    await deliver_press_result(message, press_release)
+
+
+async def accept_user_press_text(message: Message, text: str) -> None:
+    draft = text.strip()
+    if not draft:
+        await message.reply_text(
+            messages.PRESS_IMPORT_EMPTY_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    await message.reply_text(
+        messages.PRESS_SAVED_TEXT,
+        reply_markup=keyboards.main_menu_keyboard(),
+    )
+    await deliver_press_result(message, draft)
 
 
 async def deliver_cover_result(
@@ -589,7 +682,7 @@ async def cmd_press(_: Client, message: Message) -> None:
     if not prompt:
         await message.reply_text(
             messages.PRESS_MODE_TEXT,
-            reply_markup=keyboards.main_menu_keyboard(),
+            reply_markup=keyboards.press_mode_keyboard(),
         )
         return
 
@@ -640,10 +733,11 @@ async def handle_text(_: Client, message: Message) -> None:
         return
 
     if text == keyboards.BTN_PRESS:
-        set_mode(message, MODE_PRESS)
+        clear_press_pending(get_user_id(message))
+        set_mode(message, None)
         await message.reply_text(
             messages.PRESS_MODE_TEXT,
-            reply_markup=keyboards.main_menu_keyboard(),
+            reply_markup=keyboards.press_mode_keyboard(),
         )
         return
 
@@ -675,6 +769,14 @@ async def handle_text(_: Client, message: Message) -> None:
         await run_press(message, text)
         return
 
+    if get_mode(message) == MODE_PRESS_IMPORT:
+        await accept_user_press_text(message, text)
+        return
+
+    if get_mode(message) == MODE_PRESS_EDIT:
+        await run_press_edit(message, text)
+        return
+
     if get_mode(message) == MODE_COVER_GEN:
         await run_cover_gen(message, text)
         return
@@ -689,6 +791,56 @@ async def handle_text(_: Client, message: Message) -> None:
 
     await message.reply_text(
         messages.FALLBACK_TEXT,
+        reply_markup=keyboards.main_menu_keyboard(),
+    )
+
+
+@app.on_callback_query(
+    filters.regex(rf"^{keyboards.PRESS_FLOW_CALLBACK_PREFIX}(generate|import)$")
+)
+async def press_flow_callback(_: Client, callback_query: CallbackQuery) -> None:
+    if callback_query.from_user is None or callback_query.message is None:
+        return
+
+    user_id = callback_query.from_user.id
+    action = callback_query.data.split(":")[1]
+
+    if action == "generate":
+        clear_press_pending(user_id)
+        user_modes[user_id] = MODE_PRESS
+        await callback_query.answer()
+        await callback_query.message.reply_text(
+            messages.PRESS_GENERATE_PROMPT_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    clear_press_pending(user_id)
+    user_modes[user_id] = MODE_PRESS_IMPORT
+    await callback_query.answer()
+    await callback_query.message.reply_text(
+        messages.PRESS_IMPORT_TEXT,
+        reply_markup=keyboards.main_menu_keyboard(),
+    )
+
+
+@app.on_callback_query(filters.regex(f"^{keyboards.PRESS_EDIT_CALLBACK}$"))
+async def press_edit_callback(_: Client, callback_query: CallbackQuery) -> None:
+    if callback_query.from_user is None or callback_query.message is None:
+        return
+
+    user_id = callback_query.from_user.id
+    if user_id not in press_pending:
+        await callback_query.answer(
+            "Сначала сгенерируй пресс-релиз",
+            show_alert=True,
+        )
+        return
+
+    user_modes[user_id] = MODE_PRESS_EDIT
+    await callback_query.answer()
+    await callback_query.message.reply_text(
+        messages.PRESS_EDIT_PROMPT_TEXT,
         reply_markup=keyboards.main_menu_keyboard(),
     )
 
