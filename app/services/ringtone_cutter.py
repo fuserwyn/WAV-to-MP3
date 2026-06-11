@@ -35,6 +35,7 @@ def cut_ringtone(
     output_path: Path,
     start_sec: float,
     duration_sec: int,
+    output_format: str = "mp3",
 ) -> subprocess.CompletedProcess:
     command = [
         "ffmpeg",
@@ -45,12 +46,12 @@ def cut_ringtone(
         str(input_path),
         "-t",
         str(duration_sec),
-        "-codec:a",
-        "libmp3lame",
-        "-q:a",
-        "2",
-        str(output_path),
     ]
+    if output_format == "wav":
+        command.extend(["-c:a", "pcm_s24le"])
+    else:
+        command.extend(["-codec:a", "libmp3lame", "-q:a", "2"])
+    command.append(str(output_path))
     return subprocess.run(
         command,
         capture_output=True,

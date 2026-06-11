@@ -14,11 +14,13 @@ from app.config import (
     MAX_INPUT_MB,
     OPENROUTER_MODEL,
     OPEN_ROUTER_KEY,
+    POYO_API_KEY,
 )
 from app.models.user_model import UserModel
 from app.repositories.user_repository import UserRepository
 from app.services.audio_converter import convert_audio
 from app.services.image_processor import resize_to_square
+from app.services.nano_banana import generate_nano_banana_image
 from app.services.press_release import generate_press_release
 from app.services.ringtone_cutter import cut_ringtone, parse_ringtone_input
 from app.views import keyboards, messages
@@ -61,6 +63,7 @@ AUDIO_EXTENSIONS = (".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac")
 TELEGRAM_MESSAGE_LIMIT = 4096
 
 MODE_COVER = "cover"
+MODE_COVER_GEN = "cover_gen"
 MODE_PRESS = "press"
 MODE_CONVERTER = "converter"
 MODE_RINGTONE = "ringtone"
@@ -274,11 +277,26 @@ async def convert_and_reply(client: Client, message: Message) -> None:
             )
 
 
+async def ask_ringtone_format(
+    message: Message,
+    pending: dict,
+    start_sec: float,
+    duration_sec: int,
+) -> None:
+    pending["start_sec"] = start_sec
+    pending["duration_sec"] = duration_sec
+    await message.reply_text(
+        messages.RINGTONE_PICK_FORMAT_TEXT,
+        reply_markup=keyboards.ringtone_format_keyboard(),
+    )
+
+
 async def process_ringtone(
     message: Message,
     user_id: int,
     start_sec: float,
     duration_sec: int,
+    output_format: str,
 ) -> None:
     pending = ringtone_pending.get(user_id)
     if not pending:
@@ -290,7 +308,8 @@ async def process_ringtone(
 
     await message.reply_text(messages.RINGTONE_CUTTING_TEXT)
 
-    output_filename = f"{pending['stem']}_ringtone_{duration_sec}s.mp3"
+    extension = "wav" if output_format == "wav" else "mp3"
+    output_filename = f"{pending['stem']}_ringtone_{duration_sec}s.{extension}"
     output_path = Path(pending["tmpdir"]) / output_filename
 
     try:
@@ -299,6 +318,7 @@ async def process_ringtone(
             output_path,
             start_sec,
             duration_sec,
+            output_format=extension,
         )
     except Exception:
         logger.exception("Failed to run ffmpeg for ringtone")
@@ -322,7 +342,9 @@ async def process_ringtone(
     await message.reply_document(
         document=str(output_path),
         file_name=output_filename,
-        caption=messages.ringtone_success_caption(start_sec, duration_sec),
+        caption=messages.ringtone_success_caption(
+            start_sec, duration_sec, extension
+        ),
     )
     clear_ringtone_pending(user_id)
 
@@ -393,7 +415,7 @@ async def handle_ringtone_text(message: Message, text: str) -> None:
         )
         return
 
-    await process_ringtone(message, user_id, start_sec, duration_sec)
+    await ask_ringtone_format(message, pending, start_sec, duration_sec)
 
 
 async def run_press(message: Message, prompt: str) -> None:
@@ -421,6 +443,37 @@ async def run_press(message: Message, prompt: str) -> None:
         return
 
     await reply_long_text(message, press_release)
+
+
+async def run_cover_gen(message: Message, prompt: str) -> None:
+    if not POYO_API_KEY:
+        await message.reply_text(
+            messages.COVER_GEN_NO_KEY_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    await message.reply_text(messages.COVER_GEN_GENERATING_TEXT)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        raw_path = Path(tmpdir) / "generated_raw.jpg"
+        output_path = Path(tmpdir) / "cover_3000.jpg"
+        try:
+            await generate_nano_banana_image(prompt, POYO_API_KEY, raw_path)
+            resize_to_square(raw_path, output_path)
+        except Exception:
+            logger.exception("Failed to generate cover via Nano Banana")
+            await message.reply_text(
+                messages.COVER_GEN_ERROR_TEXT,
+                reply_markup=keyboards.main_menu_keyboard(),
+            )
+            return
+
+        await message.reply_document(
+            document=str(output_path),
+            caption=messages.COVER_GEN_SUCCESS_CAPTION,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
 
 
 @app.on_message(filters.command("start"))
@@ -461,7 +514,28 @@ async def cmd_press(_: Client, message: Message) -> None:
     await run_press(message, prompt)
 
 
-@app.on_message(filters.text & ~filters.command(["start", "stats", "press"]))
+@app.on_message(filters.command("gen"))
+async def cmd_gen(_: Client, message: Message) -> None:
+    track_user(message)
+    set_mode(message, MODE_COVER_GEN)
+
+    prompt = ""
+    if message.text:
+        parts = message.text.split(maxsplit=1)
+        if len(parts) > 1:
+            prompt = parts[1].strip()
+
+    if not prompt:
+        await message.reply_text(
+            messages.COVER_GEN_MODE_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    await run_cover_gen(message, prompt)
+
+
+@app.on_message(filters.text & ~filters.command(["start", "stats", "press", "gen"]))
 async def handle_text(_: Client, message: Message) -> None:
     track_user(message)
     text = (message.text or "").strip()
@@ -470,6 +544,14 @@ async def handle_text(_: Client, message: Message) -> None:
         set_mode(message, MODE_COVER)
         await message.reply_text(
             messages.COVER_MODE_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    if text == keyboards.BTN_COVER_GEN:
+        set_mode(message, MODE_COVER_GEN)
+        await message.reply_text(
+            messages.COVER_GEN_MODE_TEXT,
             reply_markup=keyboards.main_menu_keyboard(),
         )
         return
@@ -510,6 +592,10 @@ async def handle_text(_: Client, message: Message) -> None:
         await run_press(message, text)
         return
 
+    if get_mode(message) == MODE_COVER_GEN:
+        await run_cover_gen(message, text)
+        return
+
     if get_mode(message) == MODE_RINGTONE:
         await handle_ringtone_text(message, text)
         return
@@ -534,11 +620,38 @@ async def ringtone_duration_callback(_: Client, callback_query: CallbackQuery) -
         return
 
     await callback_query.answer()
+    await ask_ringtone_format(
+        callback_query.message,
+        pending,
+        pending["start_sec"],
+        duration_sec,
+    )
+
+
+@app.on_callback_query(filters.regex(r"^ringtone_format:(mp3|wav)$"))
+async def ringtone_format_callback(_: Client, callback_query: CallbackQuery) -> None:
+    if callback_query.from_user is None or callback_query.message is None:
+        return
+
+    user_id = callback_query.from_user.id
+    output_format = callback_query.data.split(":")[1]
+    pending = ringtone_pending.get(user_id)
+
+    if (
+        not pending
+        or pending.get("start_sec") is None
+        or pending.get("duration_sec") is None
+    ):
+        await callback_query.answer("Сначала укажи время и длительность", show_alert=True)
+        return
+
+    await callback_query.answer()
     await process_ringtone(
         callback_query.message,
         user_id,
         pending["start_sec"],
-        duration_sec,
+        pending["duration_sec"],
+        output_format,
     )
 
 
@@ -546,9 +659,14 @@ async def ringtone_duration_callback(_: Client, callback_query: CallbackQuery) -
 async def handle_photo(client: Client, message: Message) -> None:
     track_user(message)
     mode = get_mode(message)
-    if mode == MODE_CONVERTER:
+    if mode in {MODE_CONVERTER, MODE_COVER_GEN}:
+        wrong_text = (
+            messages.COVER_GEN_WRONG_INPUT_TEXT
+            if mode == MODE_COVER_GEN
+            else messages.WRONG_MODE_COVER_TEXT
+        )
         await message.reply_text(
-            messages.WRONG_MODE_COVER_TEXT,
+            wrong_text,
             reply_markup=keyboards.main_menu_keyboard(),
         )
         return
@@ -569,9 +687,14 @@ async def handle_media(client: Client, message: Message) -> None:
     mode = get_mode(message)
 
     if is_image_document(message):
-        if mode in {MODE_CONVERTER, MODE_RINGTONE}:
+        if mode in {MODE_CONVERTER, MODE_RINGTONE, MODE_COVER_GEN}:
+            wrong_text = messages.COVER_GEN_WRONG_INPUT_TEXT
+            if mode == MODE_CONVERTER:
+                wrong_text = messages.WRONG_MODE_COVER_TEXT
+            elif mode == MODE_RINGTONE:
+                wrong_text = messages.WRONG_MODE_RINGTONE_TEXT
             await message.reply_text(
-                messages.WRONG_MODE_COVER_TEXT,
+                wrong_text,
                 reply_markup=keyboards.main_menu_keyboard(),
             )
             return
@@ -590,9 +713,14 @@ async def handle_media(client: Client, message: Message) -> None:
         await save_ringtone_audio(client, message)
         return
 
-    if mode == MODE_COVER:
+    if mode in {MODE_COVER, MODE_COVER_GEN}:
+        wrong_text = (
+            messages.COVER_GEN_WRONG_INPUT_TEXT
+            if mode == MODE_COVER_GEN
+            else messages.WRONG_MODE_CONVERTER_TEXT
+        )
         await message.reply_text(
-            messages.WRONG_MODE_CONVERTER_TEXT,
+            wrong_text,
             reply_markup=keyboards.main_menu_keyboard(),
         )
         return
@@ -603,7 +731,7 @@ async def handle_media(client: Client, message: Message) -> None:
 
 @app.on_message(
     filters.all
-    & ~filters.command(["start", "stats", "press"])
+    & ~filters.command(["start", "stats", "press", "gen"])
     & ~filters.text
     & ~filters.photo
     & ~filters.document

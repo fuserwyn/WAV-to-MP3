@@ -6,9 +6,10 @@ def start_text() -> str:
         f"Привет! Я {BOT_NAME} — бот для релизов и продакшена.\n\n"
         "Выбери режим кнопкой ниже:\n\n"
         "🖼 Обложка — фото → JPG 3000×3000 (файлом)\n"
+        "✨ Генерация обложки — промпт → Nano Banana 3000×3000\n"
         "📰 Пресс-релиз — опиши релиз текстом\n"
         "🎵 Конвертер — WAV ↔ MP3 (аудио или файлом)\n"
-        "📱 Рингтон — нарезка с таймкода на 30/45/60 сек\n\n"
+        "📱 Рингтон — нарезка с таймкода на 30/45/60 сек (MP3 или WAV)\n\n"
         "Команды: /stats"
     )
 
@@ -16,6 +17,21 @@ def start_text() -> str:
 COVER_MODE_TEXT = (
     "Режим: Обложка\n"
     "Отправь фото или картинку файлом — верну JPG 3000×3000 px."
+)
+COVER_GEN_MODE_TEXT = (
+    "Режим: Генерация обложки\n"
+    "Опиши обложку одним сообщением — сгенерирую квадрат 3000×3000 через Nano Banana.\n"
+    "Пример: lo-fi обложка альбома, ночной город, неон, дождь"
+)
+COVER_GEN_GENERATING_TEXT = "Генерирую обложку через Nano Banana..."
+COVER_GEN_NO_KEY_TEXT = "PoYo API не настроен. Добавь POYO_API_KEY в переменные окружения."
+COVER_GEN_ERROR_TEXT = "Не удалось сгенерировать обложку. Попробуй другой промпт."
+COVER_GEN_SUCCESS_CAPTION = "Готово: обложка Nano Banana 3000×3000 (файл)"
+WRONG_MODE_COVER_GEN_TEXT = (
+    "Сейчас активен другой режим. Нажми ✨ Генерация обложки или 🏠 Меню."
+)
+COVER_GEN_WRONG_INPUT_TEXT = (
+    "В режиме генерации отправь текстовый промпт, не картинку."
 )
 PRESS_MODE_TEXT = (
     "Режим: Пресс-релиз\n"
@@ -32,14 +48,15 @@ RINGTONE_MODE_TEXT = (
     "2. Укажи время начала и длину:\n"
     "   • `1:30 45` — с 1:30 на 45 сек\n"
     "   • `90 60` — с 90-й сек на 60 сек\n"
-    "   • или время, затем кнопку 30/45/60"
+    "   • или время, затем кнопки 30/45/60 и формат MP3/WAV"
 )
 RINGTONE_AUDIO_SAVED_TEXT = (
     "Аудио получил.\n"
     "Укажи время начала и длительность (30, 45 или 60 сек).\n"
-    "Пример: `1:30 45`"
+    "Пример: `1:30 45`, затем выбери MP3 или WAV"
 )
 RINGTONE_PICK_DURATION_TEXT = "Выбери длительность кнопкой ниже:"
+RINGTONE_PICK_FORMAT_TEXT = "Выбери формат выхода:"
 RINGTONE_INVALID_INPUT_TEXT = (
     "Не понял формат.\n"
     "Пример: `1:30 45` или `90 60`"
@@ -48,8 +65,11 @@ RINGTONE_NO_AUDIO_TEXT = "Сначала отправь аудио в режим
 RINGTONE_CUTTING_TEXT = "Нарезаю рингтон..."
 RINGTONE_ERROR_TEXT = "Не удалось нарезать рингтон. Проверь таймкод и файл."
 RINGTONE_INVALID_AUDIO_TEXT = "Нужен аудиофайл (MP3, WAV и др.)."
-def ringtone_success_caption(start_sec: float, duration_sec: int) -> str:
-    return f"Готово: рингтон {duration_sec} сек с {format_timecode(start_sec)}"
+def ringtone_success_caption(
+    start_sec: float, duration_sec: int, output_format: str
+) -> str:
+    fmt = output_format.upper()
+    return f"Готово: рингтон {fmt}, {duration_sec} сек с {format_timecode(start_sec)}"
 MENU_TEXT = "Главное меню. Выбери режим кнопкой ниже."
 WRONG_MODE_COVER_TEXT = "Сейчас активен другой режим. Нажми 🖼 Обложка или 🏠 Меню."
 WRONG_MODE_CONVERTER_TEXT = "Сейчас активен другой режим. Нажми 🎵 Конвертер или 🏠 Меню."
@@ -76,7 +96,10 @@ def convert_success_caption(output_extension: str) -> str:
     if output_extension == ".wav":
         return "Готово: MP3 -> WAV (24-bit)"
     return "Готово: WAV -> MP3"
-FALLBACK_TEXT = "Выбери режим кнопкой: Обложка, Пресс-релиз, Конвертер или Рингтон."
+FALLBACK_TEXT = (
+    "Выбери режим кнопкой: Обложка, Генерация обложки, "
+    "Пресс-релиз, Конвертер или Рингтон."
+)
 PRESS_USAGE_TEXT = "Использование: /press описание для пресс-релиза"
 PRESS_NO_KEY_TEXT = "OpenRouter не настроен. Добавь OPEN_ROUTER_KEY в переменные окружения."
 PRESS_GENERATING_TEXT = "Генерирую пресс-релиз..."
