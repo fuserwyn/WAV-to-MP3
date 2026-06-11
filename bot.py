@@ -19,7 +19,7 @@ from app.repositories.user_repository import UserRepository
 from app.services.audio_converter import convert_audio
 from app.services.image_processor import resize_to_square
 from app.services.press_release import generate_press_release
-from app.views import messages
+from app.views import keyboards, messages
 
 if not BOT_TOKEN:
     raise RuntimeError("Environment variable BOT_TOKEN is required")
@@ -57,12 +57,39 @@ IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 
 TELEGRAM_MESSAGE_LIMIT = 4096
 
+MODE_COVER = "cover"
+MODE_PRESS = "press"
+MODE_CONVERTER = "converter"
+
+user_modes: dict[int, str] = {}
+
 
 def track_user(message: Message) -> None:
     user = message.from_user
     if user is None:
         return
     user_model.upsert_user(user.id, user.username, user.first_name, user.last_name)
+
+
+def get_user_id(message: Message) -> int | None:
+    return message.from_user.id if message.from_user else None
+
+
+def get_mode(message: Message) -> str | None:
+    user_id = get_user_id(message)
+    if user_id is None:
+        return None
+    return user_modes.get(user_id)
+
+
+def set_mode(message: Message, mode: str | None) -> None:
+    user_id = get_user_id(message)
+    if user_id is None:
+        return
+    if mode is None:
+        user_modes.pop(user_id, None)
+    else:
+        user_modes[user_id] = mode
 
 
 def detect_formats(
@@ -219,35 +246,12 @@ async def convert_and_reply(client: Client, message: Message) -> None:
             )
 
 
-@app.on_message(filters.command("start"))
-async def cmd_start(_: Client, message: Message) -> None:
-    track_user(message)
-    await message.reply_text(messages.start_text())
-
-
-@app.on_message(filters.command("stats"))
-async def cmd_stats(_: Client, message: Message) -> None:
-    track_user(message)
-    rows, total_users, total_conversions = user_model.fetch_stats()
-    await message.reply_text(messages.stats_text(rows, total_users, total_conversions))
-
-
-@app.on_message(filters.command("press"))
-async def cmd_press(_: Client, message: Message) -> None:
-    track_user(message)
-
-    prompt = ""
-    if message.text:
-        parts = message.text.split(maxsplit=1)
-        if len(parts) > 1:
-            prompt = parts[1].strip()
-
-    if not prompt:
-        await message.reply_text(messages.PRESS_USAGE_TEXT)
-        return
-
+async def run_press(message: Message, prompt: str) -> None:
     if not OPEN_ROUTER_KEY:
-        await message.reply_text(messages.PRESS_NO_KEY_TEXT)
+        await message.reply_text(
+            messages.PRESS_NO_KEY_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
         return
 
     await message.reply_text(messages.PRESS_GENERATING_TEXT)
@@ -260,31 +264,157 @@ async def cmd_press(_: Client, message: Message) -> None:
         )
     except Exception:
         logger.exception("Failed to generate press release")
-        await message.reply_text(messages.PRESS_ERROR_TEXT)
+        await message.reply_text(
+            messages.PRESS_ERROR_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
         return
 
     await reply_long_text(message, press_release)
 
 
+@app.on_message(filters.command("start"))
+async def cmd_start(_: Client, message: Message) -> None:
+    track_user(message)
+    set_mode(message, None)
+    await message.reply_text(
+        messages.start_text(),
+        reply_markup=keyboards.main_menu_keyboard(),
+    )
+
+
+@app.on_message(filters.command("stats"))
+async def cmd_stats(_: Client, message: Message) -> None:
+    track_user(message)
+    rows, total_users, total_conversions = user_model.fetch_stats()
+    await message.reply_text(messages.stats_text(rows, total_users, total_conversions))
+
+
+@app.on_message(filters.command("press"))
+async def cmd_press(_: Client, message: Message) -> None:
+    track_user(message)
+    set_mode(message, MODE_PRESS)
+
+    prompt = ""
+    if message.text:
+        parts = message.text.split(maxsplit=1)
+        if len(parts) > 1:
+            prompt = parts[1].strip()
+
+    if not prompt:
+        await message.reply_text(
+            messages.PRESS_MODE_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    await run_press(message, prompt)
+
+
+@app.on_message(filters.text & ~filters.command(["start", "stats", "press"]))
+async def handle_text(_: Client, message: Message) -> None:
+    track_user(message)
+    text = (message.text or "").strip()
+
+    if text == keyboards.BTN_COVER:
+        set_mode(message, MODE_COVER)
+        await message.reply_text(
+            messages.COVER_MODE_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    if text == keyboards.BTN_PRESS:
+        set_mode(message, MODE_PRESS)
+        await message.reply_text(
+            messages.PRESS_MODE_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    if text == keyboards.BTN_CONVERTER:
+        set_mode(message, MODE_CONVERTER)
+        await message.reply_text(
+            messages.CONVERTER_MODE_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    if text == keyboards.BTN_MENU:
+        set_mode(message, None)
+        await message.reply_text(
+            messages.MENU_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    if get_mode(message) == MODE_PRESS:
+        await run_press(message, text)
+        return
+
+    await message.reply_text(
+        messages.FALLBACK_TEXT,
+        reply_markup=keyboards.main_menu_keyboard(),
+    )
+
+
 @app.on_message(filters.photo)
 async def handle_photo(client: Client, message: Message) -> None:
     track_user(message)
+    mode = get_mode(message)
+    if mode == MODE_CONVERTER:
+        await message.reply_text(
+            messages.WRONG_MODE_COVER_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+    if mode is None:
+        set_mode(message, MODE_COVER)
     await resize_and_reply(client, message)
 
 
 @app.on_message(filters.document | filters.audio)
 async def handle_media(client: Client, message: Message) -> None:
     track_user(message)
+    mode = get_mode(message)
+
     if is_image_document(message):
+        if mode == MODE_CONVERTER:
+            await message.reply_text(
+                messages.WRONG_MODE_COVER_TEXT,
+                reply_markup=keyboards.main_menu_keyboard(),
+            )
+            return
+        if mode is None:
+            set_mode(message, MODE_COVER)
         await resize_and_reply(client, message)
         return
+
+    if mode == MODE_COVER:
+        await message.reply_text(
+            messages.WRONG_MODE_CONVERTER_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+    if mode is None:
+        set_mode(message, MODE_CONVERTER)
     await convert_and_reply(client, message)
 
 
-@app.on_message(filters.all)
-async def fallback(_: Client, message: Message) -> None:
+@app.on_message(
+    filters.all
+    & ~filters.command(["start", "stats", "press"])
+    & ~filters.text
+    & ~filters.photo
+    & ~filters.document
+    & ~filters.audio
+)
+async def fallback_other(_: Client, message: Message) -> None:
     track_user(message)
-    await message.reply_text(messages.FALLBACK_TEXT)
+    await message.reply_text(
+        messages.FALLBACK_TEXT,
+        reply_markup=keyboards.main_menu_keyboard(),
+    )
 
 
 if __name__ == "__main__":
