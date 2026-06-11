@@ -1,9 +1,10 @@
 import logging
+import shutil
 import tempfile
 from pathlib import Path
 
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import CallbackQuery, Message
 
 from app.config import (
     API_HASH,
@@ -19,6 +20,7 @@ from app.repositories.user_repository import UserRepository
 from app.services.audio_converter import convert_audio
 from app.services.image_processor import resize_to_square
 from app.services.press_release import generate_press_release
+from app.services.ringtone_cutter import cut_ringtone, parse_ringtone_input
 from app.views import keyboards, messages
 
 if not BOT_TOKEN:
@@ -53,6 +55,7 @@ max_input_bytes = MAX_INPUT_MB * 1024 * 1024
 MP3_MIME_TYPES = {"audio/mpeg", "audio/mp3"}
 WAV_MIME_TYPES = {"audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave"}
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
+AUDIO_EXTENSIONS = (".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac")
 
 
 TELEGRAM_MESSAGE_LIMIT = 4096
@@ -60,8 +63,10 @@ TELEGRAM_MESSAGE_LIMIT = 4096
 MODE_COVER = "cover"
 MODE_PRESS = "press"
 MODE_CONVERTER = "converter"
+MODE_RINGTONE = "ringtone"
 
 user_modes: dict[int, str] = {}
+ringtone_pending: dict[int, dict] = {}
 
 
 def track_user(message: Message) -> None:
@@ -90,6 +95,29 @@ def set_mode(message: Message, mode: str | None) -> None:
         user_modes.pop(user_id, None)
     else:
         user_modes[user_id] = mode
+    if mode != MODE_RINGTONE:
+        clear_ringtone_pending(user_id)
+
+
+def clear_ringtone_pending(user_id: int | None) -> None:
+    if user_id is None:
+        return
+    pending = ringtone_pending.pop(user_id, None)
+    if pending and pending.get("tmpdir"):
+        shutil.rmtree(pending["tmpdir"], ignore_errors=True)
+
+
+def is_audio_media(message: Message) -> bool:
+    if message.audio:
+        return True
+    document = message.document
+    if document is None:
+        return False
+    mime_type = (document.mime_type or "").lower()
+    if mime_type.startswith("audio/"):
+        return True
+    file_name = (document.file_name or "").lower()
+    return any(file_name.endswith(ext) for ext in AUDIO_EXTENSIONS)
 
 
 def detect_formats(
@@ -246,6 +274,128 @@ async def convert_and_reply(client: Client, message: Message) -> None:
             )
 
 
+async def process_ringtone(
+    message: Message,
+    user_id: int,
+    start_sec: float,
+    duration_sec: int,
+) -> None:
+    pending = ringtone_pending.get(user_id)
+    if not pending:
+        await message.reply_text(
+            messages.RINGTONE_NO_AUDIO_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    await message.reply_text(messages.RINGTONE_CUTTING_TEXT)
+
+    output_filename = f"{pending['stem']}_ringtone_{duration_sec}s.mp3"
+    output_path = Path(pending["tmpdir"]) / output_filename
+
+    try:
+        result = cut_ringtone(
+            Path(pending["input_path"]),
+            output_path,
+            start_sec,
+            duration_sec,
+        )
+    except Exception:
+        logger.exception("Failed to run ffmpeg for ringtone")
+        await message.reply_text(
+            messages.RINGTONE_ERROR_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    if result.returncode != 0 or not output_path.exists():
+        logger.error("Ringtone ffmpeg failed: %s", result.stderr)
+        await message.reply_text(
+            messages.RINGTONE_ERROR_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    if message.from_user:
+        user_model.increment_conversions(message.from_user.id)
+
+    await message.reply_document(
+        document=str(output_path),
+        file_name=output_filename,
+        caption=messages.ringtone_success_caption(start_sec, duration_sec),
+    )
+    clear_ringtone_pending(user_id)
+
+
+async def save_ringtone_audio(client: Client, message: Message) -> bool:
+    user_id = get_user_id(message)
+    if user_id is None:
+        return False
+
+    file_size = get_media_file_size(message)
+    if file_size and file_size > max_input_bytes:
+        await message.reply_text(messages.file_too_big_text(MAX_INPUT_MB))
+        return True
+
+    clear_ringtone_pending(user_id)
+    tmpdir = tempfile.mkdtemp()
+    input_path = Path(tmpdir) / "input.audio"
+
+    await client.download_media(message, file_name=str(input_path))
+
+    stem = "audio"
+    if message.audio and message.audio.file_name:
+        stem = Path(message.audio.file_name).stem
+    elif message.document and message.document.file_name:
+        stem = Path(message.document.file_name).stem
+
+    ringtone_pending[user_id] = {
+        "tmpdir": tmpdir,
+        "input_path": str(input_path),
+        "stem": stem,
+        "start_sec": None,
+    }
+
+    await message.reply_text(
+        messages.RINGTONE_AUDIO_SAVED_TEXT,
+        reply_markup=keyboards.ringtone_duration_keyboard(),
+    )
+    return True
+
+
+async def handle_ringtone_text(message: Message, text: str) -> None:
+    user_id = get_user_id(message)
+    if user_id is None:
+        return
+
+    try:
+        start_sec, duration_sec = parse_ringtone_input(text)
+    except ValueError:
+        await message.reply_text(
+            messages.RINGTONE_INVALID_INPUT_TEXT,
+            reply_markup=keyboards.ringtone_duration_keyboard(),
+        )
+        return
+
+    pending = ringtone_pending.get(user_id)
+    if not pending:
+        await message.reply_text(
+            messages.RINGTONE_NO_AUDIO_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    if duration_sec is None:
+        pending["start_sec"] = start_sec
+        await message.reply_text(
+            messages.RINGTONE_PICK_DURATION_TEXT,
+            reply_markup=keyboards.ringtone_duration_keyboard(),
+        )
+        return
+
+    await process_ringtone(message, user_id, start_sec, duration_sec)
+
+
 async def run_press(message: Message, prompt: str) -> None:
     if not OPEN_ROUTER_KEY:
         await message.reply_text(
@@ -340,6 +490,14 @@ async def handle_text(_: Client, message: Message) -> None:
         )
         return
 
+    if text == keyboards.BTN_RINGTONE:
+        set_mode(message, MODE_RINGTONE)
+        await message.reply_text(
+            messages.RINGTONE_MODE_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
     if text == keyboards.BTN_MENU:
         set_mode(message, None)
         await message.reply_text(
@@ -352,9 +510,35 @@ async def handle_text(_: Client, message: Message) -> None:
         await run_press(message, text)
         return
 
+    if get_mode(message) == MODE_RINGTONE:
+        await handle_ringtone_text(message, text)
+        return
+
     await message.reply_text(
         messages.FALLBACK_TEXT,
         reply_markup=keyboards.main_menu_keyboard(),
+    )
+
+
+@app.on_callback_query(filters.regex(r"^ringtone_duration:(30|45|60)$"))
+async def ringtone_duration_callback(_: Client, callback_query: CallbackQuery) -> None:
+    if callback_query.from_user is None or callback_query.message is None:
+        return
+
+    user_id = callback_query.from_user.id
+    duration_sec = int(callback_query.data.split(":")[1])
+    pending = ringtone_pending.get(user_id)
+
+    if not pending or pending.get("start_sec") is None:
+        await callback_query.answer("Сначала укажи время начала", show_alert=True)
+        return
+
+    await callback_query.answer()
+    await process_ringtone(
+        callback_query.message,
+        user_id,
+        pending["start_sec"],
+        duration_sec,
     )
 
 
@@ -365,6 +549,12 @@ async def handle_photo(client: Client, message: Message) -> None:
     if mode == MODE_CONVERTER:
         await message.reply_text(
             messages.WRONG_MODE_COVER_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+    if mode == MODE_RINGTONE:
+        await message.reply_text(
+            messages.WRONG_MODE_RINGTONE_TEXT,
             reply_markup=keyboards.main_menu_keyboard(),
         )
         return
@@ -379,7 +569,7 @@ async def handle_media(client: Client, message: Message) -> None:
     mode = get_mode(message)
 
     if is_image_document(message):
-        if mode == MODE_CONVERTER:
+        if mode in {MODE_CONVERTER, MODE_RINGTONE}:
             await message.reply_text(
                 messages.WRONG_MODE_COVER_TEXT,
                 reply_markup=keyboards.main_menu_keyboard(),
@@ -388,6 +578,16 @@ async def handle_media(client: Client, message: Message) -> None:
         if mode is None:
             set_mode(message, MODE_COVER)
         await resize_and_reply(client, message)
+        return
+
+    if mode == MODE_RINGTONE:
+        if not is_audio_media(message):
+            await message.reply_text(
+                messages.RINGTONE_INVALID_AUDIO_TEXT,
+                reply_markup=keyboards.main_menu_keyboard(),
+            )
+            return
+        await save_ringtone_audio(client, message)
         return
 
     if mode == MODE_COVER:
@@ -408,6 +608,7 @@ async def handle_media(client: Client, message: Message) -> None:
     & ~filters.photo
     & ~filters.document
     & ~filters.audio
+    & ~filters.callback_query
 )
 async def fallback_other(_: Client, message: Message) -> None:
     track_user(message)

@@ -7,7 +7,8 @@ def start_text() -> str:
         "Выбери режим кнопкой ниже:\n\n"
         "🖼 Обложка — фото → JPG 3000×3000 (файлом)\n"
         "📰 Пресс-релиз — опиши релиз текстом\n"
-        "🎵 Конвертер — WAV ↔ MP3 (аудио или файлом)\n\n"
+        "🎵 Конвертер — WAV ↔ MP3 (аудио или файлом)\n"
+        "📱 Рингтон — нарезка с таймкода на 30/45/60 сек\n\n"
         "Команды: /stats"
     )
 
@@ -25,9 +26,43 @@ CONVERTER_MODE_TEXT = (
     "Отправь WAV или MP3 — как трек или файлом.\n"
     "WAV → MP3, MP3 → WAV (24-bit)."
 )
+RINGTONE_MODE_TEXT = (
+    "Режим: Рингтон\n"
+    "1. Отправь аудио (трек или файлом)\n"
+    "2. Укажи время начала и длину:\n"
+    "   • `1:30 45` — с 1:30 на 45 сек\n"
+    "   • `90 60` — с 90-й сек на 60 сек\n"
+    "   • или время, затем кнопку 30/45/60"
+)
+RINGTONE_AUDIO_SAVED_TEXT = (
+    "Аудио получил.\n"
+    "Укажи время начала и длительность (30, 45 или 60 сек).\n"
+    "Пример: `1:30 45`"
+)
+RINGTONE_PICK_DURATION_TEXT = "Выбери длительность кнопкой ниже:"
+RINGTONE_INVALID_INPUT_TEXT = (
+    "Не понял формат.\n"
+    "Пример: `1:30 45` или `90 60`"
+)
+RINGTONE_NO_AUDIO_TEXT = "Сначала отправь аудио в режиме Рингтон."
+RINGTONE_CUTTING_TEXT = "Нарезаю рингтон..."
+RINGTONE_ERROR_TEXT = "Не удалось нарезать рингтон. Проверь таймкод и файл."
+RINGTONE_INVALID_AUDIO_TEXT = "Нужен аудиофайл (MP3, WAV и др.)."
+def ringtone_success_caption(start_sec: float, duration_sec: int) -> str:
+    return f"Готово: рингтон {duration_sec} сек с {format_timecode(start_sec)}"
 MENU_TEXT = "Главное меню. Выбери режим кнопкой ниже."
 WRONG_MODE_COVER_TEXT = "Сейчас активен другой режим. Нажми 🖼 Обложка или 🏠 Меню."
 WRONG_MODE_CONVERTER_TEXT = "Сейчас активен другой режим. Нажми 🎵 Конвертер или 🏠 Меню."
+WRONG_MODE_RINGTONE_TEXT = "Сейчас активен другой режим. Нажми 📱 Рингтон или 🏠 Меню."
+
+
+def format_timecode(seconds: float) -> str:
+    total = int(seconds)
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
 
 
 INVALID_EXTENSION_TEXT = "Нужен файл с расширением .wav или .mp3"
@@ -41,7 +76,7 @@ def convert_success_caption(output_extension: str) -> str:
     if output_extension == ".wav":
         return "Готово: MP3 -> WAV (24-bit)"
     return "Готово: WAV -> MP3"
-FALLBACK_TEXT = "Выбери режим кнопкой: Обложка, Пресс-релиз или Конвертер."
+FALLBACK_TEXT = "Выбери режим кнопкой: Обложка, Пресс-релиз, Конвертер или Рингтон."
 PRESS_USAGE_TEXT = "Использование: /press описание для пресс-релиза"
 PRESS_NO_KEY_TEXT = "OpenRouter не настроен. Добавь OPEN_ROUTER_KEY в переменные окружения."
 PRESS_GENERATING_TEXT = "Генерирую пресс-релиз..."
