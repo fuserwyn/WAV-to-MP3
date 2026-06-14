@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import shutil
 import tempfile
@@ -393,28 +394,53 @@ async def save_ringtone_audio(client: Client, message: Message) -> bool:
 
     clear_ringtone_pending(user_id)
     tmpdir = tempfile.mkdtemp()
-    input_path = Path(tmpdir) / "input.audio"
 
-    await client.download_media(message, file_name=str(input_path))
+    try:
+        await message.reply_text(messages.RINGTONE_DOWNLOADING_TEXT)
 
-    stem = "audio"
-    if message.audio and message.audio.file_name:
-        stem = Path(message.audio.file_name).stem
-    elif message.document and message.document.file_name:
-        stem = Path(message.document.file_name).stem
+        input_path = Path(tmpdir) / "input.audio"
+        await asyncio.wait_for(
+            client.download_media(message, file_name=str(input_path)),
+            timeout=300,
+        )
 
-    ringtone_pending[user_id] = {
-        "tmpdir": tmpdir,
-        "input_path": str(input_path),
-        "stem": stem,
-        "start_sec": None,
-    }
+        if not input_path.exists() or input_path.stat().st_size == 0:
+            raise ValueError("Downloaded audio file is empty")
 
-    await message.reply_text(
-        messages.RINGTONE_AUDIO_SAVED_TEXT,
-        reply_markup=keyboards.ringtone_duration_keyboard(),
-    )
-    return True
+        stem = "audio"
+        if message.audio and message.audio.file_name:
+            stem = Path(message.audio.file_name).stem
+        elif message.document and message.document.file_name:
+            stem = Path(message.document.file_name).stem
+
+        ringtone_pending[user_id] = {
+            "tmpdir": tmpdir,
+            "input_path": str(input_path),
+            "stem": stem,
+            "start_sec": None,
+        }
+
+        await message.reply_text(
+            messages.RINGTONE_AUDIO_SAVED_TEXT,
+            reply_markup=keyboards.ringtone_duration_keyboard(),
+        )
+        return True
+    except asyncio.TimeoutError:
+        logger.exception("Ringtone audio download timed out for user %s", user_id)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        await message.reply_text(
+            messages.RINGTONE_DOWNLOAD_ERROR_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return True
+    except Exception:
+        logger.exception("Failed to download ringtone audio for user %s", user_id)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        await message.reply_text(
+            messages.RINGTONE_DOWNLOAD_ERROR_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return True
 
 
 async def handle_ringtone_text(message: Message, text: str) -> None:

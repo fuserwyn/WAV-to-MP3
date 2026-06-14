@@ -85,6 +85,11 @@ RINGTONE_AUDIO_SAVED_TEXT = (
     "Укажи время начала и длительность (30, 45 или 60 сек).\n"
     "Пример: `1:30 45`, затем выбери MP3 или WAV"
 )
+RINGTONE_DOWNLOADING_TEXT = "Получаю аудио, подожди..."
+RINGTONE_DOWNLOAD_ERROR_TEXT = (
+    "Не удалось скачать аудио. Отправь файл ещё раз "
+    "или пришли трек напрямую, без пересылки."
+)
 RINGTONE_PICK_DURATION_TEXT = "Выбери длительность кнопкой ниже:"
 RINGTONE_PICK_FORMAT_TEXT = "Выбери формат выхода:"
 RINGTONE_INVALID_INPUT_TEXT = (
