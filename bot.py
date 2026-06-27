@@ -275,7 +275,7 @@ async def convert_and_reply(client: Client, message: Message) -> None:
 
     with tempfile.TemporaryDirectory() as tmpdir:
         input_path = Path(tmpdir) / f"input{input_extension}"
-        output_path = Path(tmpdir) / f"output{output_extension}"
+        output_path = Path(tmpdir) / output_filename
 
         await client.download_media(message, file_name=str(input_path))
 
@@ -298,7 +298,6 @@ async def convert_and_reply(client: Client, message: Message) -> None:
         if output_extension == ".mp3":
             await message.reply_audio(
                 audio=str(output_path),
-                file_name=output_filename,
                 title=Path(output_filename).stem,
                 caption=caption,
             )
