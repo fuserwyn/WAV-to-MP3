@@ -4,6 +4,7 @@ BTN_COVER = "🖼 Обложка"
 BTN_COVER_GEN = "✨ Генерация обложки"
 BTN_PRESS = "📰 Пресс-релиз"
 BTN_ARTIST = "🎤 Описание артиста"
+BTN_PITCH = "🚀 Питчинг трека"
 BTN_CONVERTER = "🎵 Конвертер"
 BTN_RINGTONE = "📱 Рингтон"
 BTN_MENU = "🏠 Меню"
@@ -13,6 +14,7 @@ MENU_BUTTONS = {
     BTN_COVER_GEN,
     BTN_PRESS,
     BTN_ARTIST,
+    BTN_PITCH,
     BTN_CONVERTER,
     BTN_RINGTONE,
     BTN_MENU,
@@ -24,6 +26,7 @@ COVER_GEN_EDIT_CALLBACK = "cover_gen_edit"
 PRESS_EDIT_CALLBACK = "press_edit"
 PRESS_FLOW_CALLBACK_PREFIX = "press_flow:"
 ARTIST_EDIT_CALLBACK = "artist_edit"
+PITCH_EDIT_CALLBACK = "pitch_edit"
 
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
@@ -31,8 +34,8 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
         [
             [KeyboardButton(BTN_COVER), KeyboardButton(BTN_COVER_GEN)],
             [KeyboardButton(BTN_PRESS), KeyboardButton(BTN_ARTIST)],
-            [KeyboardButton(BTN_CONVERTER), KeyboardButton(BTN_RINGTONE)],
-            [KeyboardButton(BTN_MENU)],
+            [KeyboardButton(BTN_PITCH), KeyboardButton(BTN_CONVERTER)],
+            [KeyboardButton(BTN_RINGTONE), KeyboardButton(BTN_MENU)],
         ],
         resize_keyboard=True,
     )
@@ -87,6 +90,19 @@ def artist_result_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     "✏️ Доредактировать",
                     callback_data=ARTIST_EDIT_CALLBACK,
+                )
+            ]
+        ]
+    )
+
+
+def pitch_result_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✏️ Доредактировать",
+                    callback_data=PITCH_EDIT_CALLBACK,
                 )
             ]
         ]

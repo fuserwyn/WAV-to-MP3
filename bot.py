@@ -25,6 +25,7 @@ from app.services.image_processor import resize_to_square
 from app.services.nano_banana import edit_nano_banana_image, generate_nano_banana_image
 from app.services.press_release import edit_press_release, generate_press_release
 from app.services.ringtone_cutter import cut_ringtone, parse_ringtone_input
+from app.services.track_pitch import edit_track_pitch, generate_track_pitch
 from app.views import keyboards, messages
 
 if not BOT_TOKEN:
@@ -72,6 +73,8 @@ MODE_PRESS_IMPORT = "press_import"
 MODE_PRESS_EDIT = "press_edit"
 MODE_ARTIST = "artist"
 MODE_ARTIST_EDIT = "artist_edit"
+MODE_PITCH = "pitch"
+MODE_PITCH_EDIT = "pitch_edit"
 MODE_CONVERTER = "converter"
 MODE_RINGTONE = "ringtone"
 
@@ -80,6 +83,7 @@ ringtone_pending: dict[int, dict] = {}
 cover_gen_pending: dict[int, dict] = {}
 press_pending: dict[int, dict] = {}
 artist_pending: dict[int, dict] = {}
+pitch_pending: dict[int, dict] = {}
 
 
 def track_user(message: Message) -> None:
@@ -116,6 +120,8 @@ def set_mode(message: Message, mode: str | None) -> None:
         clear_press_pending(user_id)
     if mode not in {MODE_ARTIST, MODE_ARTIST_EDIT}:
         clear_artist_pending(user_id)
+    if mode not in {MODE_PITCH, MODE_PITCH_EDIT}:
+        clear_pitch_pending(user_id)
 
 
 def clear_press_pending(user_id: int | None) -> None:
@@ -128,6 +134,12 @@ def clear_artist_pending(user_id: int | None) -> None:
     if user_id is None:
         return
     artist_pending.pop(user_id, None)
+
+
+def clear_pitch_pending(user_id: int | None) -> None:
+    if user_id is None:
+        return
+    pitch_pending.pop(user_id, None)
 
 
 def clear_cover_gen_pending(user_id: int | None) -> None:
@@ -667,6 +679,88 @@ async def run_artist_edit(message: Message, instructions: str) -> None:
     await deliver_artist_result(message, bio)
 
 
+async def deliver_pitch_result(message: Message, text: str) -> None:
+    user_id = get_user_id(message)
+    if user_id is not None:
+        pitch_pending[user_id] = {"text": text}
+        user_modes[user_id] = MODE_PITCH_EDIT
+
+    await reply_long_text(
+        message,
+        text,
+        reply_markup=keyboards.pitch_result_keyboard(),
+    )
+
+
+async def run_pitch(message: Message, prompt: str) -> None:
+    clear_pitch_pending(get_user_id(message))
+
+    if not OPEN_ROUTER_KEY:
+        await message.reply_text(
+            messages.PRESS_NO_KEY_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    await message.reply_text(messages.PITCH_GENERATING_TEXT)
+
+    try:
+        pitch = await generate_track_pitch(
+            prompt=prompt,
+            api_key=OPEN_ROUTER_KEY,
+            model=OPENROUTER_MODEL,
+        )
+    except Exception:
+        logger.exception("Failed to generate track pitch")
+        await message.reply_text(
+            messages.PITCH_ERROR_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    await deliver_pitch_result(message, pitch)
+
+
+async def run_pitch_edit(message: Message, instructions: str) -> None:
+    user_id = get_user_id(message)
+    if user_id is None:
+        return
+
+    pending = pitch_pending.get(user_id)
+    if not pending or not pending.get("text"):
+        await message.reply_text(
+            messages.PITCH_NO_TEXT_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    if not OPEN_ROUTER_KEY:
+        await message.reply_text(
+            messages.PRESS_NO_KEY_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    await message.reply_text(messages.PITCH_EDITING_TEXT)
+
+    try:
+        pitch = await edit_track_pitch(
+            current_text=pending["text"],
+            edit_instructions=instructions,
+            api_key=OPEN_ROUTER_KEY,
+            model=OPENROUTER_MODEL,
+        )
+    except Exception:
+        logger.exception("Failed to edit track pitch")
+        await message.reply_text(
+            messages.PITCH_EDIT_ERROR_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    await deliver_pitch_result(message, pitch)
+
+
 async def deliver_cover_result(
     message: Message,
     output_path: Path,
@@ -869,6 +963,15 @@ async def handle_text(_: Client, message: Message) -> None:
         )
         return
 
+    if text == keyboards.BTN_PITCH:
+        clear_pitch_pending(get_user_id(message))
+        set_mode(message, MODE_PITCH)
+        await message.reply_text(
+            messages.PITCH_MODE_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
     if text == keyboards.BTN_CONVERTER:
         set_mode(message, MODE_CONVERTER)
         await message.reply_text(
@@ -911,6 +1014,14 @@ async def handle_text(_: Client, message: Message) -> None:
 
     if get_mode(message) == MODE_ARTIST_EDIT:
         await run_artist_edit(message, text)
+        return
+
+    if get_mode(message) == MODE_PITCH:
+        await run_pitch(message, text)
+        return
+
+    if get_mode(message) == MODE_PITCH_EDIT:
+        await run_pitch_edit(message, text)
         return
 
     if get_mode(message) == MODE_COVER_GEN:
@@ -998,6 +1109,27 @@ async def artist_edit_callback(_: Client, callback_query: CallbackQuery) -> None
     await callback_query.answer()
     await callback_query.message.reply_text(
         messages.ARTIST_EDIT_PROMPT_TEXT,
+        reply_markup=keyboards.main_menu_keyboard(),
+    )
+
+
+@app.on_callback_query(filters.regex(f"^{keyboards.PITCH_EDIT_CALLBACK}$"))
+async def pitch_edit_callback(_: Client, callback_query: CallbackQuery) -> None:
+    if callback_query.from_user is None or callback_query.message is None:
+        return
+
+    user_id = callback_query.from_user.id
+    if user_id not in pitch_pending:
+        await callback_query.answer(
+            "Сначала собери питч трека",
+            show_alert=True,
+        )
+        return
+
+    user_modes[user_id] = MODE_PITCH_EDIT
+    await callback_query.answer()
+    await callback_query.message.reply_text(
+        messages.PITCH_EDIT_PROMPT_TEXT,
         reply_markup=keyboards.main_menu_keyboard(),
     )
 
