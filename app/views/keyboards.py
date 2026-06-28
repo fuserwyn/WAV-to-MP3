@@ -3,6 +3,7 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardB
 from app.services.image_processor import COVER_SIZES
 
 BTN_COVER = "🖼 Обложка"
+BTN_COVER_SQUARE = "📐 Квадратный формат"
 BTN_COVER_GEN = "✨ Генерация обложки"
 BTN_PRESS = "📰 Пресс-релиз"
 BTN_ARTIST = "🎤 Описание артиста"
@@ -13,7 +14,6 @@ BTN_MENU = "🏠 Меню"
 
 MENU_BUTTONS = {
     BTN_COVER,
-    BTN_COVER_GEN,
     BTN_PRESS,
     BTN_ARTIST,
     BTN_PITCH,
@@ -25,6 +25,7 @@ MENU_BUTTONS = {
 RINGTONE_DURATION_CALLBACK_PREFIX = "ringtone_duration:"
 RINGTONE_FORMAT_CALLBACK_PREFIX = "ringtone_format:"
 COVER_GEN_EDIT_CALLBACK = "cover_gen_edit"
+COVER_MENU_CALLBACK_PREFIX = "cover_menu:"
 COVER_FLOW_CALLBACK_PREFIX = "cover_flow:"
 COVER_SIZE_CALLBACK_PREFIX = "cover_size:"
 PRESS_EDIT_CALLBACK = "press_edit"
@@ -36,10 +37,10 @@ PITCH_EDIT_CALLBACK = "pitch_edit"
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton(BTN_COVER), KeyboardButton(BTN_COVER_GEN)],
-            [KeyboardButton(BTN_PRESS), KeyboardButton(BTN_ARTIST)],
-            [KeyboardButton(BTN_PITCH), KeyboardButton(BTN_CONVERTER)],
-            [KeyboardButton(BTN_RINGTONE), KeyboardButton(BTN_MENU)],
+            [KeyboardButton(BTN_COVER), KeyboardButton(BTN_PRESS)],
+            [KeyboardButton(BTN_ARTIST), KeyboardButton(BTN_PITCH)],
+            [KeyboardButton(BTN_CONVERTER), KeyboardButton(BTN_RINGTONE)],
+            [KeyboardButton(BTN_MENU)],
         ],
         resize_keyboard=True,
     )
@@ -109,6 +110,25 @@ def pitch_result_keyboard() -> InlineKeyboardMarkup:
                     callback_data=PITCH_EDIT_CALLBACK,
                 )
             ]
+        ]
+    )
+
+
+def cover_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    BTN_COVER_SQUARE,
+                    callback_data=f"{COVER_MENU_CALLBACK_PREFIX}square",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    BTN_COVER_GEN,
+                    callback_data=f"{COVER_MENU_CALLBACK_PREFIX}gen",
+                ),
+            ],
         ]
     )
 

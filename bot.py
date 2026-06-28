@@ -990,8 +990,8 @@ async def cmd_gen(_: Client, message: Message) -> None:
 
     if not prompt:
         await message.reply_text(
-            messages.COVER_GEN_MODE_TEXT,
-            reply_markup=keyboards.cover_mode_keyboard(),
+            messages.COVER_MENU_TEXT,
+            reply_markup=keyboards.cover_menu_keyboard(),
         )
         return
 
@@ -1005,19 +1005,11 @@ async def handle_text(_: Client, message: Message) -> None:
 
     if text == keyboards.BTN_COVER:
         clear_cover_resize_settings(get_user_id(message))
-        set_mode(message, MODE_COVER)
-        await message.reply_text(
-            messages.COVER_MODE_TEXT,
-            reply_markup=keyboards.cover_size_keyboard(),
-        )
-        return
-
-    if text == keyboards.BTN_COVER_GEN:
         clear_cover_gen_pending(get_user_id(message))
         set_mode(message, None)
         await message.reply_text(
-            messages.COVER_GEN_MODE_TEXT,
-            reply_markup=keyboards.cover_mode_keyboard(),
+            messages.COVER_MENU_TEXT,
+            reply_markup=keyboards.cover_menu_keyboard(),
         )
         return
 
@@ -1207,6 +1199,36 @@ async def pitch_edit_callback(_: Client, callback_query: CallbackQuery) -> None:
     await callback_query.message.reply_text(
         messages.PITCH_EDIT_PROMPT_TEXT,
         reply_markup=keyboards.main_menu_keyboard(),
+    )
+
+
+@app.on_callback_query(
+    filters.regex(rf"^{keyboards.COVER_MENU_CALLBACK_PREFIX}(square|gen)$")
+)
+async def cover_menu_callback(_: Client, callback_query: CallbackQuery) -> None:
+    if callback_query.from_user is None or callback_query.message is None:
+        return
+
+    user_id = callback_query.from_user.id
+    action = callback_query.data.split(":")[1]
+
+    if action == "square":
+        clear_cover_gen_pending(user_id)
+        clear_cover_resize_settings(user_id)
+        user_modes[user_id] = MODE_COVER
+        await callback_query.answer()
+        await callback_query.message.reply_text(
+            messages.COVER_MODE_TEXT,
+            reply_markup=keyboards.cover_size_keyboard(),
+        )
+        return
+
+    clear_cover_gen_pending(user_id)
+    user_modes[user_id] = None
+    await callback_query.answer()
+    await callback_query.message.reply_text(
+        messages.COVER_GEN_MODE_TEXT,
+        reply_markup=keyboards.cover_mode_keyboard(),
     )
 
 
