@@ -21,8 +21,12 @@ from app.models.user_model import UserModel
 from app.repositories.user_repository import UserRepository
 from app.services.artist_bio import edit_artist_bio, generate_artist_bio
 from app.services.audio_converter import convert_audio
-from app.services.image_processor import resize_to_square
-from app.services.nano_banana import edit_nano_banana_image, generate_nano_banana_image
+from app.services.image_processor import COVER_SIZES, resize_to_square
+from app.services.nano_banana import (
+    edit_nano_banana_image,
+    generate_nano_banana_image,
+    upload_image_to_poyo,
+)
 from app.services.press_release import edit_press_release, generate_press_release
 from app.services.ringtone_cutter import cut_ringtone, parse_ringtone_input
 from app.services.track_pitch import edit_track_pitch, generate_track_pitch
@@ -67,6 +71,7 @@ TELEGRAM_MESSAGE_LIMIT = 4096
 
 MODE_COVER = "cover"
 MODE_COVER_GEN = "cover_gen"
+MODE_COVER_GEN_IMPORT = "cover_gen_import"
 MODE_COVER_GEN_EDIT = "cover_gen_edit"
 MODE_PRESS = "press"
 MODE_PRESS_IMPORT = "press_import"
@@ -81,6 +86,7 @@ MODE_RINGTONE = "ringtone"
 user_modes: dict[int, str] = {}
 ringtone_pending: dict[int, dict] = {}
 cover_gen_pending: dict[int, dict] = {}
+cover_resize_settings: dict[int, int] = {}
 press_pending: dict[int, dict] = {}
 artist_pending: dict[int, dict] = {}
 pitch_pending: dict[int, dict] = {}
@@ -114,8 +120,10 @@ def set_mode(message: Message, mode: str | None) -> None:
         user_modes[user_id] = mode
     if mode != MODE_RINGTONE:
         clear_ringtone_pending(user_id)
-    if mode not in {MODE_COVER_GEN, MODE_COVER_GEN_EDIT}:
+    if mode not in {MODE_COVER_GEN, MODE_COVER_GEN_IMPORT, MODE_COVER_GEN_EDIT}:
         clear_cover_gen_pending(user_id)
+    if mode != MODE_COVER:
+        clear_cover_resize_settings(user_id)
     if mode not in {MODE_PRESS, MODE_PRESS_IMPORT, MODE_PRESS_EDIT}:
         clear_press_pending(user_id)
     if mode not in {MODE_ARTIST, MODE_ARTIST_EDIT}:
@@ -146,6 +154,18 @@ def clear_cover_gen_pending(user_id: int | None) -> None:
     if user_id is None:
         return
     cover_gen_pending.pop(user_id, None)
+
+
+def clear_cover_resize_settings(user_id: int | None) -> None:
+    if user_id is None:
+        return
+    cover_resize_settings.pop(user_id, None)
+
+
+def get_cover_resize_size(user_id: int | None) -> int | None:
+    if user_id is None:
+        return None
+    return cover_resize_settings.get(user_id)
 
 
 def clear_ringtone_pending(user_id: int | None) -> None:
@@ -228,21 +248,21 @@ async def reply_long_text(
         )
 
 
-def get_output_image_filename(message: Message) -> str:
+def get_output_image_filename(message: Message, size: int) -> str:
     if message.document and message.document.file_name:
-        return f"{Path(message.document.file_name).stem}_3000.jpg"
-    return "image_3000.jpg"
+        return f"{Path(message.document.file_name).stem}_{size}.jpg"
+    return f"image_{size}.jpg"
 
 
-async def resize_and_reply(client: Client, message: Message) -> None:
+async def resize_and_reply(client: Client, message: Message, size: int) -> None:
     file_size = get_media_file_size(message)
     if file_size and file_size > max_input_bytes:
         await message.reply_text(messages.file_too_big_text(MAX_INPUT_MB))
         return
 
-    await message.reply_text(messages.RESIZING_TEXT)
+    await message.reply_text(messages.resizing_text(size))
 
-    output_filename = get_output_image_filename(message)
+    output_filename = get_output_image_filename(message, size)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         input_path = Path(tmpdir) / "input.jpg"
@@ -251,7 +271,7 @@ async def resize_and_reply(client: Client, message: Message) -> None:
         await client.download_media(message, file_name=str(input_path))
 
         try:
-            resize_to_square(input_path, output_path)
+            resize_to_square(input_path, output_path, size=size)
         except Exception:
             logger.exception("Failed to resize image")
             await message.reply_text(messages.IMAGE_ERROR_TEXT)
@@ -263,8 +283,20 @@ async def resize_and_reply(client: Client, message: Message) -> None:
         await message.reply_document(
             document=str(output_path),
             file_name=output_filename,
-            caption=messages.IMAGE_SUCCESS_CAPTION,
+            caption=messages.image_success_caption(size),
         )
+
+
+async def handle_cover_image(client: Client, message: Message) -> None:
+    user_id = get_user_id(message)
+    size = get_cover_resize_size(user_id)
+    if size is None:
+        await message.reply_text(
+            messages.COVER_PICK_SIZE_TEXT,
+            reply_markup=keyboards.cover_size_keyboard(),
+        )
+        return
+    await resize_and_reply(client, message, size)
 
 
 async def convert_and_reply(client: Client, message: Message) -> None:
@@ -864,6 +896,49 @@ async def run_cover_edit(message: Message, prompt: str) -> None:
         )
 
 
+async def save_cover_gen_photo(client: Client, message: Message) -> None:
+    if not POYO_API_KEY:
+        await message.reply_text(
+            messages.COVER_GEN_NO_KEY_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    file_size = get_media_file_size(message)
+    if file_size and file_size > max_input_bytes:
+        await message.reply_text(messages.file_too_big_text(MAX_INPUT_MB))
+        return
+
+    await message.reply_text(messages.COVER_GEN_PHOTO_UPLOADING_TEXT)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        input_path = Path(tmpdir) / "input.jpg"
+        output_path = Path(tmpdir) / "cover_3000.jpg"
+
+        try:
+            await client.download_media(message, file_name=str(input_path))
+            image_url = await upload_image_to_poyo(input_path, POYO_API_KEY)
+            resize_to_square(input_path, output_path)
+        except Exception:
+            logger.exception("Failed to upload cover photo to PoYo")
+            await message.reply_text(
+                messages.COVER_GEN_PHOTO_ERROR_TEXT,
+                reply_markup=keyboards.main_menu_keyboard(),
+            )
+            return
+
+        await deliver_cover_result(
+            message,
+            output_path,
+            image_url,
+            messages.COVER_GEN_PHOTO_SAVED_CAPTION,
+        )
+        await message.reply_text(
+            messages.COVER_GEN_PHOTO_SAVED_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+
+
 @app.on_message(filters.command("start"))
 async def cmd_start(_: Client, message: Message) -> None:
     track_user(message)
@@ -916,7 +991,7 @@ async def cmd_gen(_: Client, message: Message) -> None:
     if not prompt:
         await message.reply_text(
             messages.COVER_GEN_MODE_TEXT,
-            reply_markup=keyboards.main_menu_keyboard(),
+            reply_markup=keyboards.cover_mode_keyboard(),
         )
         return
 
@@ -929,19 +1004,20 @@ async def handle_text(_: Client, message: Message) -> None:
     text = (message.text or "").strip()
 
     if text == keyboards.BTN_COVER:
+        clear_cover_resize_settings(get_user_id(message))
         set_mode(message, MODE_COVER)
         await message.reply_text(
             messages.COVER_MODE_TEXT,
-            reply_markup=keyboards.main_menu_keyboard(),
+            reply_markup=keyboards.cover_size_keyboard(),
         )
         return
 
     if text == keyboards.BTN_COVER_GEN:
         clear_cover_gen_pending(get_user_id(message))
-        set_mode(message, MODE_COVER_GEN)
+        set_mode(message, None)
         await message.reply_text(
             messages.COVER_GEN_MODE_TEXT,
-            reply_markup=keyboards.main_menu_keyboard(),
+            reply_markup=keyboards.cover_mode_keyboard(),
         )
         return
 
@@ -1134,6 +1210,57 @@ async def pitch_edit_callback(_: Client, callback_query: CallbackQuery) -> None:
     )
 
 
+@app.on_callback_query(
+    filters.regex(rf"^{keyboards.COVER_SIZE_CALLBACK_PREFIX}(\d+)$")
+)
+async def cover_size_callback(_: Client, callback_query: CallbackQuery) -> None:
+    if callback_query.from_user is None or callback_query.message is None:
+        return
+
+    user_id = callback_query.from_user.id
+    size = int(callback_query.data.split(":")[1])
+    if size not in COVER_SIZES:
+        await callback_query.answer("Недоступный размер", show_alert=True)
+        return
+
+    cover_resize_settings[user_id] = size
+    user_modes[user_id] = MODE_COVER
+    await callback_query.answer()
+    await callback_query.message.reply_text(
+        messages.cover_size_selected_text(size),
+        reply_markup=keyboards.main_menu_keyboard(),
+    )
+
+
+@app.on_callback_query(
+    filters.regex(rf"^{keyboards.COVER_FLOW_CALLBACK_PREFIX}(generate|import)$")
+)
+async def cover_flow_callback(_: Client, callback_query: CallbackQuery) -> None:
+    if callback_query.from_user is None or callback_query.message is None:
+        return
+
+    user_id = callback_query.from_user.id
+    action = callback_query.data.split(":")[1]
+
+    if action == "generate":
+        clear_cover_gen_pending(user_id)
+        user_modes[user_id] = MODE_COVER_GEN
+        await callback_query.answer()
+        await callback_query.message.reply_text(
+            messages.COVER_GEN_GENERATE_PROMPT_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    clear_cover_gen_pending(user_id)
+    user_modes[user_id] = MODE_COVER_GEN_IMPORT
+    await callback_query.answer()
+    await callback_query.message.reply_text(
+        messages.COVER_GEN_IMPORT_TEXT,
+        reply_markup=keyboards.main_menu_keyboard(),
+    )
+
+
 @app.on_callback_query(filters.regex(f"^{keyboards.COVER_GEN_EDIT_CALLBACK}$"))
 async def cover_gen_edit_callback(_: Client, callback_query: CallbackQuery) -> None:
     if callback_query.from_user is None or callback_query.message is None:
@@ -1208,12 +1335,21 @@ async def ringtone_format_callback(_: Client, callback_query: CallbackQuery) -> 
 async def handle_photo(client: Client, message: Message) -> None:
     track_user(message)
     mode = get_mode(message)
-    if mode in {MODE_CONVERTER, MODE_COVER_GEN, MODE_COVER_GEN_EDIT}:
-        wrong_text = messages.WRONG_MODE_COVER_TEXT
-        if mode in {MODE_COVER_GEN, MODE_COVER_GEN_EDIT}:
-            wrong_text = messages.COVER_GEN_WRONG_INPUT_TEXT
+    if mode == MODE_COVER_GEN_IMPORT:
+        await save_cover_gen_photo(client, message)
+        return
+    if mode in {MODE_COVER_GEN, MODE_COVER_GEN_EDIT}:
+        wrong_text = messages.COVER_GEN_WRONG_INPUT_TEXT
+        if mode == MODE_COVER_GEN_EDIT:
+            wrong_text = messages.COVER_GEN_EDIT_WRONG_INPUT_TEXT
         await message.reply_text(
             wrong_text,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+    if mode == MODE_CONVERTER:
+        await message.reply_text(
+            messages.WRONG_MODE_COVER_TEXT,
             reply_markup=keyboards.main_menu_keyboard(),
         )
         return
@@ -1225,7 +1361,14 @@ async def handle_photo(client: Client, message: Message) -> None:
         return
     if mode is None:
         set_mode(message, MODE_COVER)
-    await resize_and_reply(client, message)
+        await message.reply_text(
+            messages.COVER_PICK_SIZE_TEXT,
+            reply_markup=keyboards.cover_size_keyboard(),
+        )
+        return
+    if mode == MODE_COVER:
+        await handle_cover_image(client, message)
+        return
 
 
 @app.on_message(filters.document | filters.audio)
@@ -1234,11 +1377,24 @@ async def handle_media(client: Client, message: Message) -> None:
     mode = get_mode(message)
 
     if is_image_document(message):
-        if mode in {MODE_CONVERTER, MODE_RINGTONE, MODE_COVER_GEN, MODE_COVER_GEN_EDIT}:
+        if mode == MODE_COVER:
+            await handle_cover_image(client, message)
+            return
+        if mode == MODE_COVER_GEN_IMPORT:
+            await save_cover_gen_photo(client, message)
+            return
+        if mode in {MODE_COVER_GEN, MODE_COVER_GEN_EDIT}:
             wrong_text = messages.COVER_GEN_WRONG_INPUT_TEXT
-            if mode == MODE_CONVERTER:
-                wrong_text = messages.WRONG_MODE_COVER_TEXT
-            elif mode == MODE_RINGTONE:
+            if mode == MODE_COVER_GEN_EDIT:
+                wrong_text = messages.COVER_GEN_EDIT_WRONG_INPUT_TEXT
+            await message.reply_text(
+                wrong_text,
+                reply_markup=keyboards.main_menu_keyboard(),
+            )
+            return
+        if mode in {MODE_CONVERTER, MODE_RINGTONE}:
+            wrong_text = messages.WRONG_MODE_COVER_TEXT
+            if mode == MODE_RINGTONE:
                 wrong_text = messages.WRONG_MODE_RINGTONE_TEXT
             await message.reply_text(
                 wrong_text,
@@ -1247,8 +1403,14 @@ async def handle_media(client: Client, message: Message) -> None:
             return
         if mode is None:
             set_mode(message, MODE_COVER)
-        await resize_and_reply(client, message)
-        return
+            await message.reply_text(
+                messages.COVER_PICK_SIZE_TEXT,
+                reply_markup=keyboards.cover_size_keyboard(),
+            )
+            return
+        if mode == MODE_COVER:
+            await handle_cover_image(client, message)
+            return
 
     if mode == MODE_RINGTONE:
         if not is_audio_media(message):
@@ -1264,6 +1426,8 @@ async def handle_media(client: Client, message: Message) -> None:
         wrong_text = messages.WRONG_MODE_CONVERTER_TEXT
         if mode in {MODE_COVER_GEN, MODE_COVER_GEN_EDIT}:
             wrong_text = messages.COVER_GEN_WRONG_INPUT_TEXT
+            if mode == MODE_COVER_GEN_EDIT:
+                wrong_text = messages.COVER_GEN_EDIT_WRONG_INPUT_TEXT
         await message.reply_text(
             wrong_text,
             reply_markup=keyboards.main_menu_keyboard(),

@@ -86,6 +86,35 @@ async def download_image(url: str, output_path: Path) -> None:
         output_path.write_bytes(response.content)
 
 
+def _mime_type_for_path(image_path: Path) -> str:
+    suffix = image_path.suffix.lower()
+    return {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+    }.get(suffix, "image/jpeg")
+
+
+async def upload_image_to_poyo(image_path: Path, api_key: str) -> str:
+    headers = {"Authorization": f"Bearer {api_key}"}
+    file_name = image_path.name or "cover.jpg"
+    mime_type = _mime_type_for_path(image_path)
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.post(
+            f"{POYO_BASE_URL}/api/common/upload/stream",
+            headers=headers,
+            files={"file": (file_name, image_path.read_bytes(), mime_type)},
+            data={"file_name": file_name},
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    return data["data"]["file_url"]
+
+
 async def generate_nano_banana_image(
     prompt: str,
     api_key: str,

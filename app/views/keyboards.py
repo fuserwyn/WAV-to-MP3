@@ -1,5 +1,7 @@
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
+from app.services.image_processor import COVER_SIZES
+
 BTN_COVER = "🖼 Обложка"
 BTN_COVER_GEN = "✨ Генерация обложки"
 BTN_PRESS = "📰 Пресс-релиз"
@@ -23,6 +25,8 @@ MENU_BUTTONS = {
 RINGTONE_DURATION_CALLBACK_PREFIX = "ringtone_duration:"
 RINGTONE_FORMAT_CALLBACK_PREFIX = "ringtone_format:"
 COVER_GEN_EDIT_CALLBACK = "cover_gen_edit"
+COVER_FLOW_CALLBACK_PREFIX = "cover_flow:"
+COVER_SIZE_CALLBACK_PREFIX = "cover_size:"
 PRESS_EDIT_CALLBACK = "press_edit"
 PRESS_FLOW_CALLBACK_PREFIX = "press_flow:"
 ARTIST_EDIT_CALLBACK = "artist_edit"
@@ -104,6 +108,39 @@ def pitch_result_keyboard() -> InlineKeyboardMarkup:
                     "✏️ Доредактировать",
                     callback_data=PITCH_EDIT_CALLBACK,
                 )
+            ]
+        ]
+    )
+
+
+def cover_size_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    for index in range(0, len(COVER_SIZES), 2):
+        chunk = COVER_SIZES[index : index + 2]
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"{size}×{size}",
+                    callback_data=f"{COVER_SIZE_CALLBACK_PREFIX}{size}",
+                )
+                for size in chunk
+            ]
+        )
+    return InlineKeyboardMarkup(rows)
+
+
+def cover_mode_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✨ Сгенерировать",
+                    callback_data=f"{COVER_FLOW_CALLBACK_PREFIX}generate",
+                ),
+                InlineKeyboardButton(
+                    "📷 Моё фото",
+                    callback_data=f"{COVER_FLOW_CALLBACK_PREFIX}import",
+                ),
             ]
         ]
     )

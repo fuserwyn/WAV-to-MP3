@@ -3,6 +3,7 @@ from pathlib import Path
 from PIL import Image
 
 TARGET_SIZE = 3000
+COVER_SIZES = (3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000)
 
 
 def resize_to_square(input_path: Path, output_path: Path, size: int = TARGET_SIZE) -> None:
