@@ -32,6 +32,7 @@ COVER_GEN_EDIT_CALLBACK = "cover_gen_edit"
 COVER_MENU_CALLBACK_PREFIX = "cover_menu:"
 COVER_FLOW_CALLBACK_PREFIX = "cover_flow:"
 COVER_SIZE_CALLBACK_PREFIX = "cover_size:"
+COVER_FORMAT_CALLBACK_PREFIX = "cover_format:"
 PRESS_EDIT_CALLBACK = "press_edit"
 PRESS_FLOW_CALLBACK_PREFIX = "press_flow:"
 ARTIST_EDIT_CALLBACK = "artist_edit"
@@ -151,6 +152,23 @@ def cover_size_keyboard() -> InlineKeyboardMarkup:
             ]
         )
     return InlineKeyboardMarkup(rows)
+
+
+def cover_format_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🖼 JPG",
+                    callback_data=f"{COVER_FORMAT_CALLBACK_PREFIX}jpg",
+                ),
+                InlineKeyboardButton(
+                    "🧊 PNG",
+                    callback_data=f"{COVER_FORMAT_CALLBACK_PREFIX}png",
+                ),
+            ]
+        ]
+    )
 
 
 def cover_mode_keyboard() -> InlineKeyboardMarkup:

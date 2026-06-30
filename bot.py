@@ -21,7 +21,12 @@ from app.models.user_model import UserModel
 from app.repositories.user_repository import UserRepository
 from app.services.artist_bio import edit_artist_bio, generate_artist_bio
 from app.services.audio_converter import convert_audio
-from app.services.image_processor import COVER_SIZES, resize_to_square
+from app.services.image_processor import (
+    COVER_FORMATS,
+    COVER_SIZES,
+    get_cover_extension,
+    resize_to_square,
+)
 from app.services.nano_banana import (
     edit_nano_banana_image,
     generate_nano_banana_image,
@@ -90,6 +95,7 @@ ringtone_pending: dict[int, dict] = {}
 pcm_pending: dict[int, dict] = {}
 cover_gen_pending: dict[int, dict] = {}
 cover_resize_settings: dict[int, int] = {}
+cover_format_settings: dict[int, str] = {}
 press_pending: dict[int, dict] = {}
 artist_pending: dict[int, dict] = {}
 pitch_pending: dict[int, dict] = {}
@@ -165,12 +171,19 @@ def clear_cover_resize_settings(user_id: int | None) -> None:
     if user_id is None:
         return
     cover_resize_settings.pop(user_id, None)
+    cover_format_settings.pop(user_id, None)
 
 
 def get_cover_resize_size(user_id: int | None) -> int | None:
     if user_id is None:
         return None
     return cover_resize_settings.get(user_id)
+
+
+def get_cover_resize_format(user_id: int | None) -> str | None:
+    if user_id is None:
+        return None
+    return cover_format_settings.get(user_id)
 
 
 def clear_ringtone_pending(user_id: int | None) -> None:
@@ -261,21 +274,24 @@ async def reply_long_text(
         )
 
 
-def get_output_image_filename(message: Message, size: int) -> str:
+def get_output_image_filename(message: Message, size: int, fmt: str) -> str:
+    extension = get_cover_extension(fmt)
     if message.document and message.document.file_name:
-        return f"{Path(message.document.file_name).stem}_{size}.jpg"
-    return f"image_{size}.jpg"
+        return f"{Path(message.document.file_name).stem}_{size}{extension}"
+    return f"image_{size}{extension}"
 
 
-async def resize_and_reply(client: Client, message: Message, size: int) -> None:
+async def resize_and_reply(
+    client: Client, message: Message, size: int, fmt: str
+) -> None:
     file_size = get_media_file_size(message)
     if file_size and file_size > max_input_bytes:
         await message.reply_text(messages.file_too_big_text(MAX_INPUT_MB))
         return
 
-    await message.reply_text(messages.resizing_text(size))
+    await message.reply_text(messages.resizing_text(size, fmt))
 
-    output_filename = get_output_image_filename(message, size)
+    output_filename = get_output_image_filename(message, size, fmt)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         input_path = Path(tmpdir) / "input.jpg"
@@ -284,7 +300,7 @@ async def resize_and_reply(client: Client, message: Message, size: int) -> None:
         await client.download_media(message, file_name=str(input_path))
 
         try:
-            resize_to_square(input_path, output_path, size=size)
+            resize_to_square(input_path, output_path, size=size, fmt=fmt)
         except Exception:
             logger.exception("Failed to resize image")
             await message.reply_text(messages.IMAGE_ERROR_TEXT)
@@ -296,7 +312,7 @@ async def resize_and_reply(client: Client, message: Message, size: int) -> None:
         await message.reply_document(
             document=str(output_path),
             file_name=output_filename,
-            caption=messages.image_success_caption(size),
+            caption=messages.image_success_caption(size, fmt),
         )
 
 
@@ -309,7 +325,14 @@ async def handle_cover_image(client: Client, message: Message) -> None:
             reply_markup=keyboards.cover_size_keyboard(),
         )
         return
-    await resize_and_reply(client, message, size)
+    fmt = get_cover_resize_format(user_id)
+    if fmt is None:
+        await message.reply_text(
+            messages.COVER_PICK_FORMAT_TEXT,
+            reply_markup=keyboards.cover_format_keyboard(),
+        )
+        return
+    await resize_and_reply(client, message, size, fmt)
 
 
 async def convert_and_reply(client: Client, message: Message) -> None:
@@ -1374,10 +1397,42 @@ async def cover_size_callback(_: Client, callback_query: CallbackQuery) -> None:
         return
 
     cover_resize_settings[user_id] = size
+    cover_format_settings.pop(user_id, None)
     user_modes[user_id] = MODE_COVER
     await callback_query.answer()
     await callback_query.message.reply_text(
         messages.cover_size_selected_text(size),
+        reply_markup=keyboards.cover_format_keyboard(),
+    )
+
+
+@app.on_callback_query(
+    filters.regex(rf"^{keyboards.COVER_FORMAT_CALLBACK_PREFIX}(jpg|png)$")
+)
+async def cover_format_callback(_: Client, callback_query: CallbackQuery) -> None:
+    if callback_query.from_user is None or callback_query.message is None:
+        return
+
+    user_id = callback_query.from_user.id
+    fmt = callback_query.data.split(":")[1]
+    if fmt not in COVER_FORMATS:
+        await callback_query.answer("Недоступный формат", show_alert=True)
+        return
+
+    size = cover_resize_settings.get(user_id)
+    if size is None:
+        await callback_query.answer()
+        await callback_query.message.reply_text(
+            messages.COVER_PICK_SIZE_TEXT,
+            reply_markup=keyboards.cover_size_keyboard(),
+        )
+        return
+
+    cover_format_settings[user_id] = fmt
+    user_modes[user_id] = MODE_COVER
+    await callback_query.answer()
+    await callback_query.message.reply_text(
+        messages.cover_format_selected_text(size, fmt),
         reply_markup=keyboards.main_menu_keyboard(),
     )
 

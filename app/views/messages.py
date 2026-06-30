@@ -22,10 +22,11 @@ COVER_MENU_TEXT = (
 )
 COVER_MODE_TEXT = (
     "Режим: Квадратный формат\n"
-    "Выбери размер, затем отправь фото или картинку файлом.\n"
+    "Выбери размер, затем формат (JPG или PNG) и отправь фото или картинку файлом.\n"
     "Доступно: 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000 px."
 )
 COVER_PICK_SIZE_TEXT = "Сначала выбери размер кнопкой ниже."
+COVER_PICK_FORMAT_TEXT = "Теперь выбери формат сохранения: JPG или PNG."
 COVER_GEN_MODE_TEXT = (
     "Режим: Генерация обложки\n"
     "✨ Сгенерировать — опиши обложку, создам с нуля.\n"
@@ -212,20 +213,27 @@ def format_timecode(seconds: float) -> str:
 
 INVALID_EXTENSION_TEXT = "Нужен файл с расширением .wav или .mp3"
 CONVERTING_TEXT = "Получил файл, конвертирую..."
-RESIZING_TEXT = "Получил картинку, делаю {size}×{size}..."
-IMAGE_SUCCESS_CAPTION = "Готово: {size}×{size} px (файл)"
+RESIZING_TEXT = "Получил картинку, делаю {size}×{size} {fmt}..."
+IMAGE_SUCCESS_CAPTION = "Готово: {size}×{size} px, {fmt} (файл)"
 
 
 def cover_size_selected_text(size: int) -> str:
-    return f"Выбран размер {size}×{size}. Отправь фото или картинку файлом."
+    return f"Выбран размер {size}×{size}. Теперь выбери формат: JPG или PNG."
 
 
-def resizing_text(size: int) -> str:
-    return RESIZING_TEXT.format(size=size)
+def cover_format_selected_text(size: int, fmt: str) -> str:
+    return (
+        f"Выбрано: {size}×{size}, {fmt.upper()}. "
+        "Отправь фото или картинку файлом."
+    )
 
 
-def image_success_caption(size: int) -> str:
-    return IMAGE_SUCCESS_CAPTION.format(size=size)
+def resizing_text(size: int, fmt: str) -> str:
+    return RESIZING_TEXT.format(size=size, fmt=fmt.upper())
+
+
+def image_success_caption(size: int, fmt: str) -> str:
+    return IMAGE_SUCCESS_CAPTION.format(size=size, fmt=fmt.upper())
 
 
 IMAGE_ERROR_TEXT = "Не удалось обработать картинку."
