@@ -29,6 +29,7 @@ RINGTONE_DURATION_CALLBACK_PREFIX = "ringtone_duration:"
 RINGTONE_FORMAT_CALLBACK_PREFIX = "ringtone_format:"
 PCM_FORMAT_CALLBACK_PREFIX = "pcm_format:"
 COVER_GEN_EDIT_CALLBACK = "cover_gen_edit"
+COVER_SAVE_FILE_CALLBACK = "cover_save_file"
 COVER_MENU_CALLBACK_PREFIX = "cover_menu:"
 COVER_FLOW_CALLBACK_PREFIX = "cover_flow:"
 COVER_SIZE_CALLBACK_PREFIX = "cover_size:"
@@ -188,17 +189,31 @@ def cover_mode_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def cover_gen_result_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
+def cover_result_keyboard(
+    with_edit: bool = False, with_save: bool = False
+) -> InlineKeyboardMarkup | None:
+    rows = []
+    if with_edit:
+        rows.append(
             [
                 InlineKeyboardButton(
                     "✏️ Доредактировать",
                     callback_data=COVER_GEN_EDIT_CALLBACK,
                 )
             ]
-        ]
-    )
+        )
+    if with_save:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "💾 Сохранить как файл",
+                    callback_data=COVER_SAVE_FILE_CALLBACK,
+                )
+            ]
+        )
+    if not rows:
+        return None
+    return InlineKeyboardMarkup(rows)
 
 
 def pcm_format_keyboard() -> InlineKeyboardMarkup:

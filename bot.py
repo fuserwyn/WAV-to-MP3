@@ -24,6 +24,7 @@ from app.services.audio_converter import convert_audio
 from app.services.image_processor import (
     COVER_FORMATS,
     COVER_SIZES,
+    TARGET_SIZE,
     get_cover_extension,
     resize_to_square,
 )
@@ -96,6 +97,10 @@ pcm_pending: dict[int, dict] = {}
 cover_gen_pending: dict[int, dict] = {}
 cover_resize_settings: dict[int, int] = {}
 cover_format_settings: dict[int, str] = {}
+cover_file_pending: dict[int, dict] = {}
+
+# До этого размера обложку можно отдать фото-превью, выше — Telegram не примет.
+COVER_PHOTO_PREVIEW_MAX = 5000
 press_pending: dict[int, dict] = {}
 artist_pending: dict[int, dict] = {}
 pitch_pending: dict[int, dict] = {}
@@ -135,6 +140,13 @@ def set_mode(message: Message, mode: str | None) -> None:
         clear_cover_gen_pending(user_id)
     if mode != MODE_COVER:
         clear_cover_resize_settings(user_id)
+    if mode not in {
+        MODE_COVER,
+        MODE_COVER_GEN,
+        MODE_COVER_GEN_IMPORT,
+        MODE_COVER_GEN_EDIT,
+    }:
+        clear_cover_file_pending(user_id)
     if mode not in {MODE_PRESS, MODE_PRESS_IMPORT, MODE_PRESS_EDIT}:
         clear_press_pending(user_id)
     if mode not in {MODE_ARTIST, MODE_ARTIST_EDIT}:
@@ -184,6 +196,14 @@ def get_cover_resize_format(user_id: int | None) -> str | None:
     if user_id is None:
         return None
     return cover_format_settings.get(user_id)
+
+
+def clear_cover_file_pending(user_id: int | None) -> None:
+    if user_id is None:
+        return
+    pending = cover_file_pending.pop(user_id, None)
+    if pending and pending.get("tmpdir"):
+        shutil.rmtree(pending["tmpdir"], ignore_errors=True)
 
 
 def clear_ringtone_pending(user_id: int | None) -> None:
@@ -281,6 +301,57 @@ def get_output_image_filename(message: Message, size: int, fmt: str) -> str:
     return f"image_{size}{extension}"
 
 
+async def deliver_cover_image(
+    message: Message,
+    output_path: Path,
+    output_filename: str,
+    caption: str,
+    size: int,
+    with_edit: bool = False,
+) -> None:
+    """Шлёт обложку фото-превью с кнопкой «Сохранить как файл».
+
+    Файл сохраняется в персистентную папку, чтобы кнопка могла отдать
+    оригинал документом (с сохранением качества и PNG-прозрачности).
+    Если превью отправить нельзя (большой размер) — сразу отдаём файлом.
+    """
+    user_id = get_user_id(message)
+
+    persist_dir = tempfile.mkdtemp(prefix="cover_")
+    persist_path = Path(persist_dir) / output_filename
+    shutil.copy(output_path, persist_path)
+
+    if user_id is not None:
+        clear_cover_file_pending(user_id)
+        cover_file_pending[user_id] = {
+            "tmpdir": persist_dir,
+            "path": str(persist_path),
+            "filename": output_filename,
+            "caption": caption,
+        }
+
+    if size <= COVER_PHOTO_PREVIEW_MAX:
+        try:
+            await message.reply_photo(
+                photo=str(persist_path),
+                caption=caption,
+                reply_markup=keyboards.cover_result_keyboard(
+                    with_edit=with_edit, with_save=True
+                ),
+            )
+            return
+        except Exception:
+            logger.exception("Failed to send cover preview as photo")
+
+    # Большой размер или ошибка превью — отдаём сразу файлом (это и есть оригинал).
+    await message.reply_document(
+        document=str(persist_path),
+        file_name=output_filename,
+        caption=caption,
+        reply_markup=keyboards.cover_result_keyboard(with_edit=with_edit),
+    )
+
+
 async def resize_and_reply(
     client: Client, message: Message, size: int, fmt: str
 ) -> None:
@@ -309,10 +380,12 @@ async def resize_and_reply(
         if message.from_user:
             user_model.increment_conversions(message.from_user.id)
 
-        await message.reply_document(
-            document=str(output_path),
-            file_name=output_filename,
-            caption=messages.image_success_caption(size, fmt),
+        await deliver_cover_image(
+            message,
+            output_path,
+            output_filename,
+            messages.image_success_caption(size, fmt),
+            size,
         )
 
 
@@ -947,10 +1020,13 @@ async def deliver_cover_result(
         cover_gen_pending[user_id] = {"image_url": image_url}
         user_modes[user_id] = MODE_COVER_GEN_EDIT
 
-    await message.reply_document(
-        document=str(output_path),
-        caption=caption,
-        reply_markup=keyboards.cover_gen_result_keyboard(),
+    await deliver_cover_image(
+        message,
+        output_path,
+        output_path.name,
+        caption,
+        TARGET_SIZE,
+        with_edit=True,
     )
 
 
@@ -1149,6 +1225,7 @@ async def handle_text(_: Client, message: Message) -> None:
     if text == keyboards.BTN_COVER:
         clear_cover_resize_settings(get_user_id(message))
         clear_cover_gen_pending(get_user_id(message))
+        clear_cover_file_pending(get_user_id(message))
         set_mode(message, None)
         await message.reply_text(
             messages.COVER_MENU_TEXT,
@@ -1463,6 +1540,28 @@ async def cover_flow_callback(_: Client, callback_query: CallbackQuery) -> None:
     await callback_query.message.reply_text(
         messages.COVER_GEN_IMPORT_TEXT,
         reply_markup=keyboards.main_menu_keyboard(),
+    )
+
+
+@app.on_callback_query(filters.regex(f"^{keyboards.COVER_SAVE_FILE_CALLBACK}$"))
+async def cover_save_file_callback(_: Client, callback_query: CallbackQuery) -> None:
+    if callback_query.from_user is None or callback_query.message is None:
+        return
+
+    user_id = callback_query.from_user.id
+    pending = cover_file_pending.get(user_id)
+    if not pending or not Path(pending["path"]).exists():
+        await callback_query.answer(
+            "Файл больше недоступен, сделай обложку заново",
+            show_alert=True,
+        )
+        return
+
+    await callback_query.answer()
+    await callback_query.message.reply_document(
+        document=pending["path"],
+        file_name=pending["filename"],
+        caption=pending["caption"],
     )
 
 
