@@ -1,6 +1,7 @@
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 from app.services.image_processor import COVER_SIZES
+from app.services.pcm_converter import PCM_FORMATS
 
 BTN_COVER = "🖼 Обложка"
 BTN_COVER_SQUARE = "📐 Квадратный формат"
@@ -9,6 +10,7 @@ BTN_PRESS = "📰 Пресс-релиз"
 BTN_ARTIST = "🎤 Описание артиста"
 BTN_PITCH = "🚀 Питчинг трека"
 BTN_CONVERTER = "🎵 Конвертер"
+BTN_PCM = "🎚 Битрейты WAV"
 BTN_RINGTONE = "📱 Рингтон"
 BTN_MENU = "🏠 Меню"
 
@@ -18,12 +20,14 @@ MENU_BUTTONS = {
     BTN_ARTIST,
     BTN_PITCH,
     BTN_CONVERTER,
+    BTN_PCM,
     BTN_RINGTONE,
     BTN_MENU,
 }
 
 RINGTONE_DURATION_CALLBACK_PREFIX = "ringtone_duration:"
 RINGTONE_FORMAT_CALLBACK_PREFIX = "ringtone_format:"
+PCM_FORMAT_CALLBACK_PREFIX = "pcm_format:"
 COVER_GEN_EDIT_CALLBACK = "cover_gen_edit"
 COVER_MENU_CALLBACK_PREFIX = "cover_menu:"
 COVER_FLOW_CALLBACK_PREFIX = "cover_flow:"
@@ -39,8 +43,8 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
         [
             [KeyboardButton(BTN_COVER), KeyboardButton(BTN_PRESS)],
             [KeyboardButton(BTN_ARTIST), KeyboardButton(BTN_PITCH)],
-            [KeyboardButton(BTN_CONVERTER), KeyboardButton(BTN_RINGTONE)],
-            [KeyboardButton(BTN_MENU)],
+            [KeyboardButton(BTN_CONVERTER), KeyboardButton(BTN_PCM)],
+            [KeyboardButton(BTN_RINGTONE), KeyboardButton(BTN_MENU)],
         ],
         resize_keyboard=True,
     )
@@ -175,6 +179,20 @@ def cover_gen_result_keyboard() -> InlineKeyboardMarkup:
                     callback_data=COVER_GEN_EDIT_CALLBACK,
                 )
             ]
+        ]
+    )
+
+
+def pcm_format_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    label,
+                    callback_data=f"{PCM_FORMAT_CALLBACK_PREFIX}{key}",
+                )
+            ]
+            for key, (_sample_rate, _codec, label, _suffix) in PCM_FORMATS.items()
         ]
     )
 

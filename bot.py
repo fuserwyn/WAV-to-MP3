@@ -27,6 +27,7 @@ from app.services.nano_banana import (
     generate_nano_banana_image,
     upload_image_to_poyo,
 )
+from app.services.pcm_converter import PCM_FORMATS, convert_pcm
 from app.services.press_release import edit_press_release, generate_press_release
 from app.services.ringtone_cutter import cut_ringtone, parse_ringtone_input
 from app.services.track_pitch import edit_track_pitch, generate_track_pitch
@@ -81,10 +82,12 @@ MODE_ARTIST_EDIT = "artist_edit"
 MODE_PITCH = "pitch"
 MODE_PITCH_EDIT = "pitch_edit"
 MODE_CONVERTER = "converter"
+MODE_PCM = "pcm"
 MODE_RINGTONE = "ringtone"
 
 user_modes: dict[int, str] = {}
 ringtone_pending: dict[int, dict] = {}
+pcm_pending: dict[int, dict] = {}
 cover_gen_pending: dict[int, dict] = {}
 cover_resize_settings: dict[int, int] = {}
 press_pending: dict[int, dict] = {}
@@ -120,6 +123,8 @@ def set_mode(message: Message, mode: str | None) -> None:
         user_modes[user_id] = mode
     if mode != MODE_RINGTONE:
         clear_ringtone_pending(user_id)
+    if mode != MODE_PCM:
+        clear_pcm_pending(user_id)
     if mode not in {MODE_COVER_GEN, MODE_COVER_GEN_IMPORT, MODE_COVER_GEN_EDIT}:
         clear_cover_gen_pending(user_id)
     if mode != MODE_COVER:
@@ -172,6 +177,14 @@ def clear_ringtone_pending(user_id: int | None) -> None:
     if user_id is None:
         return
     pending = ringtone_pending.pop(user_id, None)
+    if pending and pending.get("tmpdir"):
+        shutil.rmtree(pending["tmpdir"], ignore_errors=True)
+
+
+def clear_pcm_pending(user_id: int | None) -> None:
+    if user_id is None:
+        return
+    pending = pcm_pending.pop(user_id, None)
     if pending and pending.get("tmpdir"):
         shutil.rmtree(pending["tmpdir"], ignore_errors=True)
 
@@ -496,6 +509,113 @@ async def save_ringtone_audio(client: Client, message: Message) -> bool:
             reply_markup=keyboards.main_menu_keyboard(),
         )
         return True
+
+
+async def save_pcm_audio(client: Client, message: Message) -> None:
+    user_id = get_user_id(message)
+    if user_id is None:
+        return
+
+    file_size = get_media_file_size(message)
+    if file_size and file_size > max_input_bytes:
+        await message.reply_text(messages.file_too_big_text(MAX_INPUT_MB))
+        return
+
+    clear_pcm_pending(user_id)
+    tmpdir = tempfile.mkdtemp()
+
+    try:
+        await message.reply_text(messages.PCM_DOWNLOADING_TEXT)
+
+        input_path = Path(tmpdir) / "input.audio"
+        await asyncio.wait_for(
+            client.download_media(message, file_name=str(input_path)),
+            timeout=300,
+        )
+
+        if not input_path.exists() or input_path.stat().st_size == 0:
+            raise ValueError("Downloaded audio file is empty")
+
+        stem = "audio"
+        if message.audio and message.audio.file_name:
+            stem = Path(message.audio.file_name).stem
+        elif message.document and message.document.file_name:
+            stem = Path(message.document.file_name).stem
+
+        pcm_pending[user_id] = {
+            "tmpdir": tmpdir,
+            "input_path": str(input_path),
+            "stem": stem,
+        }
+
+        await message.reply_text(
+            messages.PCM_AUDIO_SAVED_TEXT,
+            reply_markup=keyboards.pcm_format_keyboard(),
+        )
+    except asyncio.TimeoutError:
+        logger.exception("PCM audio download timed out for user %s", user_id)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        await message.reply_text(
+            messages.PCM_DOWNLOAD_ERROR_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+    except Exception:
+        logger.exception("Failed to download PCM audio for user %s", user_id)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        await message.reply_text(
+            messages.PCM_DOWNLOAD_ERROR_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+
+
+async def process_pcm(message: Message, user_id: int, format_key: str) -> None:
+    pending = pcm_pending.get(user_id)
+    if not pending:
+        await message.reply_text(
+            messages.PCM_NO_AUDIO_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    sample_rate, codec, label, suffix = PCM_FORMATS[format_key]
+
+    await message.reply_text(messages.PCM_CONVERTING_TEXT)
+
+    output_filename = f"{pending['stem']}_{suffix}.wav"
+    output_path = Path(pending["tmpdir"]) / output_filename
+
+    try:
+        result = convert_pcm(
+            Path(pending["input_path"]),
+            output_path,
+            sample_rate,
+            codec,
+        )
+    except Exception:
+        logger.exception("Failed to run ffmpeg for PCM conversion")
+        await message.reply_text(
+            messages.PCM_ERROR_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    if result.returncode != 0 or not output_path.exists():
+        logger.error("PCM ffmpeg failed: %s", result.stderr)
+        await message.reply_text(
+            messages.PCM_ERROR_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
+    if message.from_user:
+        user_model.increment_conversions(message.from_user.id)
+
+    await message.reply_document(
+        document=str(output_path),
+        file_name=output_filename,
+        caption=messages.pcm_success_caption(label),
+    )
+    clear_pcm_pending(user_id)
 
 
 async def handle_ringtone_text(message: Message, text: str) -> None:
@@ -1048,6 +1168,14 @@ async def handle_text(_: Client, message: Message) -> None:
         )
         return
 
+    if text == keyboards.BTN_PCM:
+        set_mode(message, MODE_PCM)
+        await message.reply_text(
+            messages.PCM_MODE_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+
     if text == keyboards.BTN_RINGTONE:
         set_mode(message, MODE_RINGTONE)
         await message.reply_text(
@@ -1353,6 +1481,26 @@ async def ringtone_format_callback(_: Client, callback_query: CallbackQuery) -> 
     )
 
 
+@app.on_callback_query(filters.regex(rf"^{keyboards.PCM_FORMAT_CALLBACK_PREFIX}(\w+)$"))
+async def pcm_format_callback(_: Client, callback_query: CallbackQuery) -> None:
+    if callback_query.from_user is None or callback_query.message is None:
+        return
+
+    user_id = callback_query.from_user.id
+    format_key = callback_query.data.split(":")[1]
+
+    if format_key not in PCM_FORMATS:
+        await callback_query.answer("Недоступный формат", show_alert=True)
+        return
+
+    if user_id not in pcm_pending:
+        await callback_query.answer("Сначала отправь аудио", show_alert=True)
+        return
+
+    await callback_query.answer()
+    await process_pcm(callback_query.message, user_id, format_key)
+
+
 @app.on_message(filters.photo)
 async def handle_photo(client: Client, message: Message) -> None:
     track_user(message)
@@ -1372,6 +1520,12 @@ async def handle_photo(client: Client, message: Message) -> None:
     if mode == MODE_CONVERTER:
         await message.reply_text(
             messages.WRONG_MODE_COVER_TEXT,
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+    if mode == MODE_PCM:
+        await message.reply_text(
+            messages.PCM_INVALID_AUDIO_TEXT,
             reply_markup=keyboards.main_menu_keyboard(),
         )
         return
@@ -1414,9 +1568,11 @@ async def handle_media(client: Client, message: Message) -> None:
                 reply_markup=keyboards.main_menu_keyboard(),
             )
             return
-        if mode in {MODE_CONVERTER, MODE_RINGTONE}:
+        if mode in {MODE_CONVERTER, MODE_PCM, MODE_RINGTONE}:
             wrong_text = messages.WRONG_MODE_COVER_TEXT
-            if mode == MODE_RINGTONE:
+            if mode == MODE_PCM:
+                wrong_text = messages.WRONG_MODE_PCM_TEXT
+            elif mode == MODE_RINGTONE:
                 wrong_text = messages.WRONG_MODE_RINGTONE_TEXT
             await message.reply_text(
                 wrong_text,
@@ -1442,6 +1598,16 @@ async def handle_media(client: Client, message: Message) -> None:
             )
             return
         await save_ringtone_audio(client, message)
+        return
+
+    if mode == MODE_PCM:
+        if not is_audio_media(message):
+            await message.reply_text(
+                messages.PCM_INVALID_AUDIO_TEXT,
+                reply_markup=keyboards.main_menu_keyboard(),
+            )
+            return
+        await save_pcm_audio(client, message)
         return
 
     if mode in {MODE_COVER, MODE_COVER_GEN, MODE_COVER_GEN_EDIT}:
